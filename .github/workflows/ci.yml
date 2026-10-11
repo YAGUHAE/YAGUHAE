@@ -1,0 +1,135 @@
+# PR / dev·main push / merge queue 검증
+#
+# 필수 체크는 `ci-ok` 하나만 지정한다 (브랜치 ruleset).
+# - `ci-ok` 라는 job 이름은 이 파일에서만 쓴다. 다른 워크플로와 겹치면 체크가 충돌한다.
+# - 검사 job 을 추가하면 반드시 ci-ok 의 needs 에도 넣는다.
+# - 나중에 배포 워크플로가 `workflows: [CI]` 로 이 워크플로를 감지하므로 name 을 바꾸지 않는다.
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited] # edited: PR 제목 수정 시 commitlint 재검사
+  push:
+    branches: [dev, main]
+  merge_group: # merge queue 를 쓰지 않으면 무시된다.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # PR 은 새 커밋이 오면 이전 실행을 취소한다. push 는 이전 실패가 가려지지 않게 취소하지 않는다.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TURBO_TELEMETRY_DISABLED: 1
+  NEXT_TELEMETRY_DISABLED: 1
+
+jobs:
+  changes:
+    uses: ./.github/workflows/_changes.yml
+    with:
+      # PR 은 영향받은 것만, push/merge queue 는 전체 실행한다.
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'all' }}
+      base_ref: ${{ github.base_ref }}
+
+  workflows-lint:
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+
+  # 로컬 commit-msg 훅은 --no-verify 로 건너뛸 수 있으므로 CI 에서 한 번 더 검사한다.
+  commitlint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # base 와 비교하려면 전체 히스토리가 필요하다.
+      - uses: ./.github/actions/setup
+      - name: 커밋 메시지 검사
+        env:
+          FROM: ${{ github.event.pull_request.base.sha }}
+          TO: ${{ github.event.pull_request.head.sha }}
+        run: pnpm exec commitlint --from "$FROM" --to "$TO" --verbose
+      # squash 머지하면 PR 제목이 dev 에 남는 커밋 메시지가 되므로 함께 검사한다.
+      # 제목은 사용자 입력이라 run 에 직접 넣으면 스크립트 인젝션이 되므로 env 로 전달한다.
+      - name: PR 제목 검사
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$PR_TITLE" | pnpm exec commitlint --verbose
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          turbo-cache-key: web
+      - run: pnpm exec turbo run lint typecheck test build --filter=@yaguhae/web
+
+  server:
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          turbo-cache-key: server
+      # 테스트에 DB 가 필요해지면 job 에 services: 를 추가한다.
+      - run: pnpm exec turbo run lint typecheck test test:e2e build --filter=@yaguhae/server
+      # 배포 때 처음 깨지지 않도록 이미지 빌드만 검증한다 (push 안 함).
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: false
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,scope=server,mode=max
+
+  # 유일한 필수 체크. 건너뛴 job 은 허용하되, 실패·취소와 changes 자체의 실패는 막는다.
+  ci-ok:
+    if: always()
+    needs: [changes, workflows-lint, commitlint, web, server]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Evaluate results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          # changes 가 성공해야만 다른 job 의 "skipped" 를 믿을 수 있다.
+          echo "$NEEDS" | jq -e '.changes.result == "success"' >/dev/null \
+            || { echo "::error::변경 감지(changes)가 성공하지 못했습니다"; exit 1; }
+          echo "$NEEDS" | jq -e '[.[] | .result] | all(. == "success" or . == "skipped")' >/dev/null \
+            || { echo "::error::실패하거나 취소된 job 이 있습니다"; exit 1; }
+
+  # dev/main push 의 CI 가 실패하면 이슈를 열어 알린다.
+  alert:
+    if: always() && github.event_name == 'push' && needs.ci-ok.result != 'success'
+    needs: [ci-ok]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      issues: write
+    steps:
+      - name: Open issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "CI 실패: ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}" \
+            --body "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
