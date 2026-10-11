@@ -1,0 +1,133 @@
+# 변경 영향 판단 (ci.yml 이 호출하는 재사용 워크플로)
+#
+# mode
+#   pr  : PR base 와의 merge-base 기준으로 영향받은 앱만 true
+#   all : 전부 true (dev/main push, merge queue)
+#
+# 안전장치: 판단 중 오류가 나면 job 이 실패한다.
+# ci.yml 의 ci-ok 가 changes 성공을 요구하므로 오류가 통과로 새지 않는다.
+name: Detect changes
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'pr | all'
+        type: string
+        default: pr
+      base_ref:
+        description: 'mode=pr 일 때 PR 의 base 브랜치 이름'
+        type: string
+        default: ''
+    outputs:
+      web:
+        value: ${{ jobs.detect.outputs.web }}
+      server:
+        value: ${{ jobs.detect.outputs.server }}
+      workflows:
+        value: ${{ jobs.detect.outputs.workflows }}
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      web: ${{ steps.detect.outputs.web }}
+      server: ${{ steps.detect.outputs.server }}
+      workflows: ${{ steps.detect.outputs.workflows }}
+    env:
+      # 앱을 추가하면 여기와 아래 APPS/PKG, outputs 에 함께 추가한다.
+      PKG_WEB: '@yaguhae/web'
+      PKG_SERVER: '@yaguhae/server'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # 히스토리가 없으면 turbo 가 전부 변경으로 판단한다.
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Detect affected apps
+        id: detect
+        env:
+          MODE: ${{ inputs.mode }}
+          BASE_REF: ${{ inputs.base_ref }}
+        run: |
+          set -euo pipefail
+
+          # 의존성을 전부 설치하지 않고 레포와 같은 버전의 turbo 만 받아 쓴다.
+          TURBO_VERSION=$(jq -r '.devDependencies.turbo' package.json | sed 's/^[\^~]//')
+          turbo() { npx --yes "turbo@${TURBO_VERSION}" "$@"; }
+
+          HEAD_REV=$(git rev-parse HEAD)
+          APPS="web server"
+          declare -A PKG=( [web]="$PKG_WEB" [server]="$PKG_SERVER" )
+          declare -A RES=( [web]=false [server]=false )
+          WORKFLOWS=false
+
+          # 패키지 이름 가드: turbo query affected 는 없는 패키지 이름에도 오류 없이
+          # "영향 없음"으로 답한다. 그러면 그 앱의 CI 가 조용히 건너뛰어지므로
+          # workspace 에 모두 있는지 먼저 확인하고, 없으면 실패시킨다.
+          LS_JSON=$(turbo ls --output=json 2>/dev/null) \
+            || { echo "::error::turbo ls 실패 (package.json 문법 오류나 workspace 설정 확인)"; exit 1; }
+          KNOWN=$(jq -r '.packages.items[].name' <<<"$LS_JSON")
+          for p in "${PKG[@]}"; do
+            grep -qxF -- "$p" <<<"$KNOWN" \
+              || { echo "::error::workspace 에 패키지가 없음: $p (PKG_* 이름 확인)"; exit 1; }
+          done
+
+          # Turbo 패키지 그래프 밖에 있는 공통 파일. 하나라도 바뀌면 전체 실행한다.
+          GLOBAL_RE='^(\.github/(workflows|actions)/|turbo\.json$|pnpm-workspace\.yaml$|pnpm-lock\.yaml$|package\.json$|\.npmrc$|\.nvmrc$)'
+
+          affected_pkg() { # $1=패키지명 $2=base -> true|false (turbo 오류는 실패 처리)
+            local rc
+            set +e
+            TURBO_SCM_BASE="$2" TURBO_SCM_HEAD="$HEAD_REV" \
+              turbo query affected --packages "$1" --exit-code >/dev/null 2>&1
+            rc=$?
+            set -e
+            case "$rc" in
+              1) echo true ;;  # 영향 있음
+              0) echo false ;; # 영향 없음
+              *) echo "::error::turbo query affected 실패 (pkg=$1, exit=$rc)" >&2; return 1 ;;
+            esac
+          }
+
+          case "$MODE" in
+            all)
+              for a in $APPS; do RES[$a]=true; done
+              WORKFLOWS=true
+              ;;
+            pr)
+              [ -n "$BASE_REF" ] || { echo "::error::mode=pr 에는 base_ref 가 필요"; exit 1; }
+              base=$(git merge-base "origin/${BASE_REF}" "$HEAD_REV")
+              files=$(git diff --name-only "$base" "$HEAD_REV")
+              if grep -qE '^\.github/' <<<"$files"; then WORKFLOWS=true; fi
+              if grep -qE "$GLOBAL_RE" <<<"$files"; then
+                for a in $APPS; do RES[$a]=true; done
+              else
+                for a in $APPS; do RES[$a]=$(affected_pkg "${PKG[$a]}" "$base"); done
+              fi
+              ;;
+            *)
+              echo "::error::알 수 없는 mode: $MODE"; exit 1
+              ;;
+          esac
+
+          {
+            echo "web=${RES[web]}"
+            echo "server=${RES[server]}"
+            echo "workflows=${WORKFLOWS}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### 변경 영향 (mode=${MODE})"
+            echo "| 대상 | 실행 |"
+            echo "|---|---|"
+            for a in $APPS; do echo "| ${a} | ${RES[$a]} |"; done
+            echo "| workflows | ${WORKFLOWS} |"
+          } >> "$GITHUB_STEP_SUMMARY"

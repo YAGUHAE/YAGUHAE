@@ -1,0 +1,37 @@
+# 공통 셋업: pnpm + Node(.nvmrc) + 의존성 설치 + Turbo 로컬 캐시 복원
+name: Setup monorepo
+description: pnpm/Node 설치, 의존성 설치, Turbo 캐시(.turbo/cache) 복원·저장
+
+inputs:
+  turbo-cache-key:
+    description: 'Turbo 캐시 키 접두사 (job 마다 다르게). 비우면 Turbo 캐시를 쓰지 않음'
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # 버전은 루트 package.json 의 packageManager 필드를 따른다.
+    - uses: pnpm/action-setup@v6
+
+    - uses: actions/setup-node@v7
+      with:
+        node-version-file: .nvmrc
+        cache: pnpm
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    # Remote Cache(Vercel) 대신 GitHub Actions 캐시에 Turbo 로컬 캐시를 보관한다.
+    # 커밋마다 새 키로 저장하고, 복원은 같은 job 의 가장 최근 캐시를 쓴다.
+    # PR 에서 저장한 캐시는 그 PR 안에서만 보이므로 dev/main 캐시를 오염시키지 않는다.
+    # 캐시는 최적화일 뿐이라 복원에 실패해도 job 은 계속된다.
+    - name: Restore Turbo cache
+      if: inputs.turbo-cache-key != ''
+      uses: actions/cache@v6
+      continue-on-error: true
+      with:
+        path: .turbo/cache
+        key: turbo-${{ inputs.turbo-cache-key }}-${{ github.sha }}
+        restore-keys: |
+          turbo-${{ inputs.turbo-cache-key }}-

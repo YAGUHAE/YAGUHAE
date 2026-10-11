@@ -1,0 +1,15 @@
+# 빌드 컨텍스트는 레포 루트다. 설치·빌드 결과물과 로컬 전용 파일은 보내지 않는다.
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+**/.env*
+!**/.env.example
+.git
+.github
+.husky
+.claude
+.omc
+**/.DS_Store
