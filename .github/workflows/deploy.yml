@@ -1,0 +1,211 @@
+# server 배포 (EC2, Blue-Green)
+#
+# main 의 CI 가 성공하면 실행된다 (workflow_run). 수동 실행(workflow_dispatch)도 main 에서만 가능하다.
+# web 은 Vercel 이 Git 연동으로 배포하므로 여기서 다루지 않는다 (docs/cd.md).
+#
+# 인증은 전부 OIDC 다. GitHub Secrets 를 쓰지 않는다.
+#   - GHCR push: GITHUB_TOKEN
+#   - AWS: GitHub OIDC → IAM Role (vars.AWS_DEPLOY_ROLE_ARN) → SSM Run Command 로 EC2 에서 deploy.sh 실행
+#
+# ⚠️ workflow_run 워크플로는 기본 브랜치(dev)에 있는 파일로 실행된다.
+#    이 파일을 PR 에서 고쳐도 dev 에 머지되기 전까지는 반영되지 않는다.
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI] # ci.yml 의 name. 바꾸면 배포가 트리거되지 않는다.
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: # main 에서 실행하면 변경 여부와 관계없이 server 를 배포한다.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false # 진행 중인 배포는 끊지 않는다. 대기 중인 실행은 최신 하나만 남는다.
+
+env:
+  IMAGE: ghcr.io/yaguhae/yaguhae-server
+
+jobs:
+  # 배포해도 되는 실행인지 판단한다. 조건이 안 맞으면 실패가 아니라 건너뛴다.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+      sha: ${{ steps.check.outputs.sha }}
+      mode: ${{ steps.check.outputs.mode }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENABLED: ${{ vars.SERVER_DEPLOY_ENABLED }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_REPO: ${{ github.event.workflow_run.repository.full_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          skip() {
+            echo "::notice::배포 건너뜀: $1"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # EC2·AWS 설정이 끝나기 전에는 배포하지 않는다 (docs/cd.md 체크리스트).
+          [ "$ENABLED" = true ] || skip "repo variable SERVER_DEPLOY_ENABLED 가 true 가 아님"
+
+          if [ "$EVENT" = workflow_dispatch ]; then
+            [ "$REF" = refs/heads/main ] || skip "수동 배포는 main 에서만 실행할 수 있음 (현재: $REF)"
+            sha="$GITHUB_SHA"; mode=all
+          else
+            [ "$CONCLUSION" = success ] || skip "CI 결과가 success 가 아님 ($CONCLUSION)"
+            [ "$RUN_EVENT" = push ] || skip "push 로 실행된 CI 가 아님 ($RUN_EVENT)"
+            [ "$RUN_REPO" = "$GITHUB_REPOSITORY" ] || skip "다른 레포에서 실행된 CI ($RUN_REPO)"
+            sha="$RUN_SHA"; mode=deploy
+          fi
+
+          # 더 새로운 커밋이 있으면 그 커밋의 CI 가 배포 태그 기준으로 따라잡으므로 건너뛴다.
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" -q .sha)
+          [ "$sha" = "$latest" ] || skip "최신 main 커밋이 아님 (${sha::7} != ${latest::7})"
+
+          { echo "ok=true"; echo "sha=$sha"; echo "mode=$mode"; } >> "$GITHUB_OUTPUT"
+
+  changes:
+    needs: gate
+    if: needs.gate.outputs.ok == 'true'
+    uses: ./.github/workflows/_changes.yml
+    with:
+      mode: ${{ needs.gate.outputs.mode }}
+      head_sha: ${{ needs.gate.outputs.sha }}
+
+  server:
+    needs: [gate, changes]
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: write # deployed/server 태그 push
+      packages: write # GHCR push
+      id-token: write # AWS OIDC
+    env:
+      SHA: ${{ needs.gate.outputs.sha }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+    steps:
+      - name: 필수 변수 확인
+        run: |
+          missing=0
+          for v in AWS_REGION AWS_DEPLOY_ROLE_ARN EC2_INSTANCE_ID; do
+            [ -n "${!v}" ] || { echo "::error::repo variable $v 가 비어 있음 (docs/cd.md)"; missing=1; }
+          done
+          exit "$missing"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+
+      # 1. 이미지 빌드 & GHCR push
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE }}:sha-${{ env.SHA }}
+          # GHCR 패키지를 이 레포에 연결한다.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,scope=server,mode=max
+
+      # 2. AWS 인증 (OIDC → IAM Role)
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 3. EC2 에서 Blue-Green 배포 (SSM Run Command)
+      #    배포 파일은 이 커밋의 레포에서 받는다. 공개 레포이고 커밋 SHA 로 고정되므로 내용이 바뀌지 않는다.
+      #    GHCR 이미지는 public 으로 두어 EC2 가 인증 없이 pull 한다 (docs/cd.md).
+      - name: Run deploy.sh on EC2
+        id: ssm
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:sha-${{ env.SHA }}
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SHA}/apps/server/deploy"
+          # SSM 은 sh 로 실행하므로 POSIX 문법만 쓴다.
+          script=$(cat <<EOF
+          set -eu
+          mkdir -p /opt/yaguhae/nginx/conf.d
+          cd /opt/yaguhae
+          curl -fsSL "${base}/compose.yml" -o compose.yml
+          curl -fsSL "${base}/deploy.sh" -o deploy.sh
+          curl -fsSL "${base}/nginx/default.conf" -o nginx/conf.d/default.conf
+          bash deploy.sh "${IMAGE_REF}"
+          EOF
+          )
+          params=$(jq -cn --arg s "$script" '{commands: ($s | split("\n")), executionTimeout: ["900"]}')
+
+          cmd_id=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy server ${SHA::7}" \
+            --parameters "$params" \
+            --query Command.CommandId --output text)
+          echo "SSM command: $cmd_id"
+
+          status=Pending
+          for _ in $(seq 1 180); do # 최대 15분
+            sleep 5
+            status=$(aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$EC2_INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in
+              Pending | InProgress | Delayed | Cancelling) continue ;;
+              *) break ;;
+            esac
+          done
+
+          aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$EC2_INSTANCE_ID" \
+            --query '[StandardOutputContent, StandardErrorContent]' --output text || true
+
+          { echo "### server 배포 (${SHA::7})"; echo "- 이미지: \`${IMAGE_REF}\`"; echo "- SSM: \`${cmd_id}\` → **${status}**"; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$status" = Success ] || { echo "::error::EC2 배포 실패 (SSM 상태: $status)"; exit 1; }
+
+      # 4. 마지막 성공 배포 기준점 이동. 실패한 배포는 태그를 옮기지 않으므로 다음 배포에서 다시 대상이 된다.
+      - name: Mark deployed
+        run: |
+          git tag -f deployed/server "$SHA"
+          git push -f origin refs/tags/deployed/server
+
+  notify-failure:
+    needs: [gate, changes, server]
+    if: >-
+      always() &&
+      (needs.gate.result == 'failure' || needs.changes.result == 'failure' || needs.server.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      issues: write
+    steps:
+      - name: Open issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.gate.outputs.sha || github.sha }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "배포 실패: server @ ${SHA::7}" \
+            --body "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
