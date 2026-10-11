@@ -125,4 +125,4 @@ TURBO_SCM_BASE=$(git merge-base origin/dev HEAD) \
 
 - `ci.yml` 의 `name: CI` 를 바꾸지 않는다. 나중에 배포 워크플로가 이 이름으로 CI 완료를 감지한다.
 - `ci-ok` 이름을 바꾸면 ruleset 의 필수 체크도 함께 바꿔야 한다.
-- 배포(CD)는 아직 없다. 배포처가 정해지면 `deploy.yml` 과 `_changes.yml` 의 deploy 모드를 추가한다.
+- 배포(CD)는 `docs/cd.md` 를 참고한다. `deploy.yml` 이 이 워크플로의 완료(`workflows: [CI]`)를 보고 실행된다.

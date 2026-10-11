@@ -1,0 +1,56 @@
+# EC2 운영 서버용 compose 파일.
+# deploy.sh 가 이 파일로 Blue-Green 배포를 한다. 직접 실행할 일은 거의 없다.
+#
+# 서버의 배포 디렉터리(/opt/yaguhae) 구조
+#   compose.yml            ← 배포 때마다 레포에서 받아옴
+#   deploy.sh              ← 배포 때마다 레포에서 받아옴
+#   nginx/conf.d/
+#     default.conf         ← 배포 때마다 레포에서 받아옴
+#     upstream.conf        ← deploy.sh 가 생성 (현재 활성 색상)
+#   images.env             ← deploy.sh 가 관리 (색상별 이미지 태그)
+#   .active                ← deploy.sh 가 관리 (blue | green)
+#   .env                   ← 사람이 직접 작성 (앱 런타임 환경변수, 레포에 없음)
+
+x-server: &server
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    NODE_ENV: production
+    PORT: 4000
+  # 호스트 포트를 열지 않는다. 외부 트래픽은 nginx 만 받는다.
+  expose:
+    - '4000'
+  healthcheck:
+    test:
+      [
+        'CMD',
+        'node',
+        '-e',
+        "fetch('http://127.0.0.1:4000/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+      ]
+    interval: 5s
+    timeout: 3s
+    retries: 3
+    start_period: 10s
+
+services:
+  server-blue:
+    <<: *server
+    image: ${SERVER_IMAGE_BLUE:-scratch}
+    container_name: yaguhae-server-blue
+
+  server-green:
+    <<: *server
+    image: ${SERVER_IMAGE_GREEN:-scratch}
+    container_name: yaguhae-server-green
+
+  nginx:
+    image: nginx:1.29-alpine
+    container_name: yaguhae-nginx
+    restart: unless-stopped
+    ports:
+      - '80:80'
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro

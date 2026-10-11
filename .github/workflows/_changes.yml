@@ -1,8 +1,10 @@
 # 변경 영향 판단 (ci.yml 이 호출하는 재사용 워크플로)
 #
 # mode
-#   pr  : PR base 와의 merge-base 기준으로 영향받은 앱만 true
-#   all : 전부 true (dev/main push, merge queue)
+#   pr     : PR base 와의 merge-base 기준으로 영향받은 앱만 true
+#   all    : 전부 true (dev/main push, merge queue)
+#   deploy : 앱별 "마지막 성공 배포 태그(deployed/<app>)" 기준. 태그가 없거나 히스토리에 없으면 true
+#            (배포 대상인 server 만 판단하고 web 은 항상 false. web 은 Vercel 이 배포한다)
 #
 # 안전장치: 판단 중 오류가 나면 job 이 실패한다.
 # ci.yml 의 ci-ok 가 changes 성공을 요구하므로 오류가 통과로 새지 않는다.
@@ -12,11 +14,15 @@ on:
   workflow_call:
     inputs:
       mode:
-        description: 'pr | all'
+        description: 'pr | all | deploy'
         type: string
         default: pr
       base_ref:
         description: 'mode=pr 일 때 PR 의 base 브랜치 이름'
+        type: string
+        default: ''
+      head_sha:
+        description: '검사할 커밋. 비우면 github.sha'
         type: string
         default: ''
     outputs:
@@ -45,7 +51,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # 히스토리가 없으면 turbo 가 전부 변경으로 판단한다.
+          ref: ${{ inputs.head_sha || github.sha }}
+          fetch-depth: 0 # 히스토리·태그가 없으면 turbo 가 전부 변경으로 판단한다.
 
       - uses: actions/setup-node@v7
         with:
@@ -112,6 +119,22 @@ jobs:
               else
                 for a in $APPS; do RES[$a]=$(affected_pkg "${PKG[$a]}" "$base"); done
               fi
+              ;;
+            deploy)
+              for a in server; do
+                tag="deployed/${a}"
+                if git rev-parse -q --verify "refs/tags/${tag}^{commit}" >/dev/null \
+                   && git merge-base --is-ancestor "refs/tags/${tag}" "$HEAD_REV"; then
+                  base=$(git rev-parse "refs/tags/${tag}^{commit}")
+                  files=$(git diff --name-only "$base" "$HEAD_REV")
+                  # 공통 파일 변경은 앱 코드와 무관하게 배포 대상
+                  if grep -qE "$GLOBAL_RE" <<<"$files"; then RES[$a]=true
+                  else RES[$a]=$(affected_pkg "${PKG[$a]}" "$base"); fi
+                else
+                  echo "배포 기준 태그(${tag})가 없거나 히스토리에 없음 -> ${a} 배포"
+                  RES[$a]=true
+                fi
+              done
               ;;
             *)
               echo "::error::알 수 없는 mode: $MODE"; exit 1
