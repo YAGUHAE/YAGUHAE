@@ -6,6 +6,7 @@
     "node": ">=24.15.0"
   },
   "scripts": {
+    "prepare": "husky",
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lint": "turbo run lint",
@@ -14,6 +15,13 @@
     "format": "turbo run format"
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3",
+    "@yaguhae/prettier-config": "workspace:*",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "prettier": "catalog:",
     "turbo": "^2.11.7"
-  }
+  },
+  "prettier": "@yaguhae/prettier-config"
 }

@@ -1,0 +1,34 @@
+. "$(dirname "$0")/use-node.sh"
+
+# git 이 stdin 으로 "<local ref> <local sha> <remote ref> <remote sha>" 를 한 줄씩 넘긴다.
+zero='0000000000000000000000000000000000000000'
+pattern='^(feat|fix|design|refactor|style|docs|test|chore|ci|perf|revert|hotfix|release)/#[0-9]+-[a-z0-9._-]+$'
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # 브랜치 삭제 push 는 검사하지 않는다.
+  [ "$local_sha" = "$zero" ] && continue
+
+  # 보호 브랜치 직접 push 차단
+  case "$remote_ref" in
+    refs/heads/main | refs/heads/dev)
+      echo "❌ '${remote_ref#refs/heads/}' 브랜치에는 직접 push 할 수 없습니다. 작업 브랜치를 만들어 PR 을 올려주세요."
+      exit 1
+      ;;
+  esac
+
+  # 브랜치명 규칙 검사: <type>/#<이슈번호>-<설명>
+  case "$local_ref" in
+    refs/heads/*)
+      branch="${local_ref#refs/heads/}"
+      if ! echo "$branch" | grep -Eq "$pattern"; then
+        echo "❌ 브랜치명 규칙에 맞지 않습니다: $branch"
+        echo "   형식: <type>/#<이슈번호>-<설명>   예) feat/#12-kakao-login"
+        echo "   type: feat fix design refactor style docs test chore ci perf revert hotfix release"
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+echo "🔍 typecheck..."
+pnpm turbo run typecheck --output-logs=errors-only
