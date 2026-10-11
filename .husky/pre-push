@@ -1,5 +1,3 @@
-. "$(dirname "$0")/use-node.sh"
-
 # git 이 stdin 으로 "<local ref> <local sha> <remote ref> <remote sha>" 를 한 줄씩 넘긴다.
 zero='0000000000000000000000000000000000000000'
 pattern='^(feat|fix|design|refactor|style|docs|test|chore|ci|perf|revert|hotfix|release)/#[0-9]+-[a-z0-9._-]+$'

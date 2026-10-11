@@ -1,3 +1,1 @@
-. "$(dirname "$0")/use-node.sh"
-
 pnpm exec commitlint --edit "$1"

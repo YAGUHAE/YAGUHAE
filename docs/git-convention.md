@@ -83,5 +83,10 @@ feat(server,web): 경기 일정 API 연동
 | `commit-msg` | commitlint 로 커밋 메시지 검사                                                 |
 | `pre-push`   | `main`/`dev` 직접 push 차단, 브랜치 이름 검사, `turbo typecheck`               |
 
-훅은 `.husky/use-node.sh` 가 nvm 으로 `.nvmrc` 의 Node 버전(24.21.0)을 맞춘 뒤 실행된다.
-해당 버전이 없으면 `nvm install` 을 실행하라는 메시지와 함께 실패한다.
+훅은 `.nvmrc` 의 Node 버전(24.21.0)에서 실행되어야 한다. 루트 `engines` 를 만족하지 못하면
+pnpm 이 실패한다. nvm 을 쓴다면 기본 버전을 맞춰둔다.
+
+```sh
+nvm install
+nvm alias default 24.21.0
+```
