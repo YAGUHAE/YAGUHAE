@@ -10,3 +10,12 @@ node_modules/
 
 # Tools
 .omc/
+
+# Turborepo
+.turbo/
+
+# Build outputs
+dist/
+.next/
+coverage/
+*.tsbuildinfo

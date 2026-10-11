@@ -1,0 +1,33 @@
+{
+  "name": "@yaguhae/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "next typegen && tsc --noEmit",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\""
+  },
+  "dependencies": {
+    "@yaguhae/shared": "workspace:*",
+    "next": "16.4.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/turbopack": "^4",
+    "@types/node": "catalog:",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@yaguhae/prettier-config": "workspace:*",
+    "@yaguhae/typescript-config": "workspace:*",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.0",
+    "prettier": "catalog:",
+    "tailwindcss": "^4",
+    "typescript": "catalog:"
+  },
+  "prettier": "@yaguhae/prettier-config"
+}
