@@ -5,11 +5,11 @@ packages:
 # 여러 앱에서 함께 쓰는 의존성 버전은 여기서 한 번만 관리한다.
 # 각 package.json 에서는 "catalog:" 로 참조한다.
 catalog:
-  "@types/node": ^24.0.0
-  prettier: ^3.4.2
+  '@types/node': ^24.0.0
+  prettier: ^3.9.10
   typescript: ^6.0.2
 
-# engines(node >=24) 를 만족하지 않으면 설치를 실패시킨다.
+# engines(node >=24.15.0) 를 만족하지 않으면 설치를 실패시킨다.
 engineStrict: true
 
 ignoredBuiltDependencies:
