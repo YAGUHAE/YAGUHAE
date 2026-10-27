@@ -6,7 +6,7 @@
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | Author       | kjmhs501@gmail.com                                                                                                           |
 | 최초 작성    | 2026-04-23                                                                                                                   |
-| 최종 수정    | 2026-10-13 (v2.3)                                                                                                            |
+| 최종 수정    | 2026-10-27 (v2.4)                                                                                                            |
 | Status       | Approved                                                                                                                     |
 | 관련 문서    | [정책 명세서](policy.md) (세부 운영 규칙) · [MVP 시스템 흐름](system-flow.md) · [화면 목록](screens.md) · [ERD 초안](erd.md) |
 | Stakeholders | 구장 운영자, 리그 운영자, 사회인야구 용병, 개발팀                                                                            |
@@ -20,6 +20,7 @@
 | v2.1 | 2026-10-12 | 개발 전 결정 사항 9건 확정 반영 (지역·구장 데이터, 도메인, DB 호스팅, 취소 정책, 승인 방치 처리, 트랜잭션, 배포 환경, 초기 지역) → [9장 Decision Log](#9-decision-log)  |
 | v2.2 | 2026-10-13 | 결정 사항 5건 추가 (D10 리그 개념, D11 알림톡, D12 노쇼 정책, D13 채팅 MVP 이후, D14 노쇼 정지 관리자 검토). 상태 모델의 `PAYMENT_SUBMITTED → CANCELLED` 전이 누락 수정 |
 | v2.3 | 2026-10-13 | Status Approved. 비기능 요구사항(5장), 베타 오픈 조건(11장), 부록 A(철회된 결정·채팅 메모) 추가. 세부 규칙은 정책 명세서로 분리                                         |
+| v2.4 | 2026-10-27 | 인프라 설계 결정 반영 (앱 이름 `apps/server`, Cron advisory lock, 시크릿 SSM, DNS Route 53, 모니터링 Sentry+UptimeRobot). 상세는 [인프라 설계](../infra.md)             |
 
 ---
 
@@ -238,7 +239,7 @@ RESERVED ─┬─> PAYMENT_SUBMITTED ─┬─> APPROVED ─┬─> ATTENDED
 | `ATTENDED`          | 참가 완료                                                                                   | —      |
 | `NO_SHOW`           | 경기 후 주최자가 노쇼 표시. 노쇼 정책(D12, D14) 적용                                        | —      |
 
-- 상태 전이는 서버(`apps/api`)의 단일 도메인 서비스에서만 수행하고, 허용되지 않은 전이는 예외로 거부한다.
+- 상태 전이는 서버(`apps/server`)의 단일 도메인 서비스에서만 수행하고, 허용되지 않은 전이는 예외로 거부한다.
 - 상태 enum은 `packages/shared`에 정의해 프론트/백엔드가 동일한 값을 사용한다.
 
 ### 실력 기반 매칭
@@ -267,7 +268,7 @@ pnpm workspaces + Turborepo 기반 모노레포로 프론트엔드와 백엔드�
 yaguhae/
 ├─ apps/
 │  ├─ web/            # Next.js (App Router)
-│  └─ api/            # NestJS (+ TypeORM Entity, Migration)
+│  └─ server/         # NestJS (+ TypeORM Entity, Migration)
 ├─ packages/
 │  ├─ shared/         # 상태 enum, 상수, 검증 스키마, 공용 타입 (런타임 의존성 최소)
 │  ├─ api-client/     # OpenAPI 스펙 기반 생성 클라이언트 (orval)
@@ -279,30 +280,30 @@ yaguhae/
 
 **패키지 경계 원칙**
 
-- TypeORM Entity 클래스는 `apps/api` 내부에만 둔다. `packages/shared`에는 데코레이터나 `reflect-metadata`에 의존하지 않는 순수 타입·enum·상수만 둔다. (Entity가 web 번들에 섞이는 것을 방지)
+- TypeORM Entity 클래스는 `apps/server` 내부에만 둔다. `packages/shared`에는 데코레이터나 `reflect-metadata`에 의존하지 않는 순수 타입·enum·상수만 둔다. (Entity가 web 번들에 섞이는 것을 방지)
 - `apps/web`은 `packages/api-client`를 통해서만 API를 호출한다.
 
 ### 7.2 기술 스택
 
-| 역할              | 선택                                                       | 비고                                                                                                                                                 |
-| ----------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 모노레포          | pnpm workspaces + Turborepo                                | 빌드 캐시, `turbo prune`으로 앱별 Docker 빌드                                                                                                        |
-| 백엔드 프레임워크 | NestJS (`apps/api`)                                        | 모듈 구조, DI, 데코레이터 기반                                                                                                                       |
-| 프론트엔드        | Next.js App Router (`apps/web`)                            |                                                                                                                                                      |
-| ORM               | TypeORM (`@nestjs/typeorm`)                                | Nest 모듈·DI 구조와 자연스럽게 통합. 데코레이터 기반 Entity. `pessimistic_write` 락으로 동시 예약 경쟁 처리                                          |
-| 트랜잭션          | `typeorm-transactional`                                    | 서비스 메서드에 `@Transactional()` 선언. 앱 부트스트랩 전 `initializeTransactionalContext()`, DataSource 생성 시 `addTransactionalDataSource()` 등록 |
-| DB                | PostgreSQL on Supabase (DB만 사용)                         | Supabase Auth·RLS·Realtime·pg_cron은 사용하지 않음. 리전은 서울(ap-northeast-2). 접속은 Session pooler 사용                                          |
-| API 계약          | `@nestjs/swagger` → OpenAPI → orval                        | 클라이언트 + React Query 훅 자동 생성. API 변경이 FE 타입 에러로 즉시 드러남                                                                         |
-| 인증              | Passport.js + JWT (access/refresh) + 카카오 OAuth strategy | refresh 토큰은 httpOnly 쿠키 (상위 도메인 공유, 7.4절)                                                                                               |
-| 권한 체계         | NestJS Guard + Custom Decorator                            | 주최자 / 용병 / 관리자 역할 분리                                                                                                                     |
-| 스케줄링          | `@nestjs/schedule` Cron                                    | 예약 24시간 자동 만료, 만료 전 알림, 승인 방치 리마인드(4시간), 경기 시작 시 미승인 건 만료. API 단일 인스턴스 전제                                  |
-| 실시간            | MVP는 폴링, 이후 Socket.io (NestJS Gateway) 검토           | 잔여 자리 시각화                                                                                                                                     |
-| 알림              | 카카오 알림톡 (D11)                                        | 사업자 등록·비즈니스 채널 개설·발송 대행사 선정·템플릿 사전 심사 필요. 3단계(12주차) 전 템플릿 승인 완료 목표                                        |
-| 배포 (프론트)     | Vercel (Root Directory = `apps/web`)                       | `app.<도메인>`. PR마다 Vercel Preview                                                                                                                |
-| 배포 (백엔드)     | AWS EC2 + Docker                                           | `api.<도메인>`. `turbo prune api --docker`로 이미지 빌드                                                                                             |
-| 환경              | local / prod 2단 구성                                      | 스테이징 없음 (MVP)                                                                                                                                  |
-| CI/CD             | GitHub Actions + Turborepo                                 | 변경된 패키지만 lint/test/build. 배포 시 앱 교체 전 `migration:run` 자동 실행                                                                        |
-| 모니터링          | Sentry (예정)                                              | 결정 필요                                                                                                                                            |
+| 역할              | 선택                                                       | 비고                                                                                                                                                                                                                 |
+| ----------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 모노레포          | pnpm workspaces + Turborepo                                | 빌드 캐시, `turbo prune`으로 앱별 Docker 빌드                                                                                                                                                                        |
+| 백엔드 프레임워크 | NestJS (`apps/server`)                                     | 모듈 구조, DI, 데코레이터 기반                                                                                                                                                                                       |
+| 프론트엔드        | Next.js App Router (`apps/web`)                            |                                                                                                                                                                                                                      |
+| ORM               | TypeORM (`@nestjs/typeorm`)                                | Nest 모듈·DI 구조와 자연스럽게 통합. 데코레이터 기반 Entity. `pessimistic_write` 락으로 동시 예약 경쟁 처리                                                                                                          |
+| 트랜잭션          | `typeorm-transactional`                                    | 서비스 메서드에 `@Transactional()` 선언. 앱 부트스트랩 전 `initializeTransactionalContext()`, DataSource 생성 시 `addTransactionalDataSource()` 등록                                                                 |
+| DB                | PostgreSQL on Supabase (DB만 사용)                         | Supabase Auth·RLS 정책·Realtime·pg_cron은 사용하지 않음. 리전은 서울(ap-northeast-2). 접속은 Session pooler 사용. 로컬 개발은 Docker Postgres                                                                        |
+| API 계약          | `@nestjs/swagger` → OpenAPI → orval                        | 클라이언트 + React Query 훅 자동 생성. API 변경이 FE 타입 에러로 즉시 드러남                                                                                                                                         |
+| 인증              | Passport.js + JWT (access/refresh) + 카카오 OAuth strategy | refresh 토큰은 httpOnly 쿠키 (상위 도메인 공유, 7.4절)                                                                                                                                                               |
+| 권한 체계         | NestJS Guard + Custom Decorator                            | 주최자 / 용병 / 관리자 역할 분리                                                                                                                                                                                     |
+| 스케줄링          | `@nestjs/schedule` Cron                                    | 예약 24시간 자동 만료, 만료 전 알림, 승인 방치 리마인드(4시간), 경기 시작 시 미승인 건 만료. Blue-Green 배포 중 두 컨테이너가 겹치므로 작업마다 DB advisory lock(`pg_try_advisory_xact_lock`)으로 한 인스턴스만 실행 |
+| 실시간            | MVP는 폴링, 이후 Socket.io (NestJS Gateway) 검토           | 잔여 자리 시각화                                                                                                                                                                                                     |
+| 알림              | 카카오 알림톡 (D11)                                        | 사업자 등록·비즈니스 채널 개설·발송 대행사 선정·템플릿 사전 심사 필요. 3단계(12주차) 전 템플릿 승인 완료 목표                                                                                                        |
+| 배포 (프론트)     | Vercel (Root Directory = `apps/web`)                       | `app.<도메인>`. PR마다 Vercel Preview                                                                                                                                                                                |
+| 배포 (백엔드)     | AWS EC2 + Docker                                           | `api.<도메인>`. `turbo prune @yaguhae/server --docker`로 이미지 빌드. 인스턴스는 `t4g.small`(서울), 접속은 SSM만 ([인프라 설계](../infra.md))                                                                        |
+| 환경              | local / prod 2단 구성                                      | 스테이징 없음 (MVP). 시크릿은 SSM Parameter Store                                                                                                                                                                    |
+| CI/CD             | GitHub Actions + Turborepo                                 | 변경된 패키지만 lint/test/build. 배포 시 앱 교체 전 `migration:run` 자동 실행                                                                                                                                        |
+| 모니터링          | Sentry (web, server) + UptimeRobot(`/health`)              | 로그는 Docker 로그 로테이션                                                                                                                                                                                          |
 
 ### 7.3 데이터·동시성 원칙
 
@@ -319,13 +320,14 @@ yaguhae/
 
 - 무료 플랜은 일정 기간 비활성 시 프로젝트가 일시정지되므로, 베타 오픈 전 Pro 플랜 전환 또는 비활성 방지 대책을 마련한다.
 - Supabase Direct connection은 IPv6 전용이므로 EC2(IPv4)에서는 **Session pooler**(5432) 접속 문자열을 사용한다. 장기 실행 서버에서는 Transaction pooler(6543)를 쓰지 않는다.
-- 마이그레이션도 같은 접속 문자열로 실행하며, DB 비밀번호·URL은 GitHub Actions Secrets와 EC2 환경변수로만 관리한다.
+- 마이그레이션도 같은 접속 문자열로 실행하며, DB 비밀번호·URL은 AWS SSM Parameter Store(SecureString)로만 관리하고, 서버에 평문 `.env`를 두지 않는다. GitHub는 Secrets 대신 AWS OIDC로 배포 역할을 가장한다.
 
 ### 7.4 인증·도메인 구성
 
 - 커스텀 도메인을 구매해 **서브도메인으로 분리**한다.
   - 프론트: `app.<도메인>` (Vercel)
-  - 백엔드: `api.<도메인>` (EC2, HTTPS 인증서 적용)
+  - 백엔드: `api.<도메인>` (EC2, nginx + Let's Encrypt HTTPS)
+  - DNS는 Route 53에서 관리한다.
 - refresh 토큰 쿠키: `HttpOnly; Secure; SameSite=Lax; Domain=.<도메인>`
 - 카카오 OAuth Redirect URI는 `api.<도메인>`의 콜백 엔드포인트로 등록한다.
 - CORS 허용 origin은 `app.<도메인>`과 Vercel Preview 도메인으로 제한한다. 환경변수(카카오 키, JWT 시크릿, DB URL)는 앱별로 분리 관리한다.
