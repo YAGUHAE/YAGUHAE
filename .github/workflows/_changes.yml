@@ -2,7 +2,10 @@
 #
 # mode
 #   pr     : PR base 와의 merge-base 기준으로 영향받은 앱만 true
-#   all    : 전부 true (dev/main push, merge queue)
+#   push   : 같은 브랜치에서 마지막으로 성공한 push CI 의 커밋 기준으로 영향받은 앱만 true
+#            이전 push 가 실패했으면 기준이 그 앞에 머물러 실패한 변경도 다시 검사한다.
+#            성공 기록이 없거나 기준 커밋이 히스토리에 없으면(강제 push 등) 전부 true
+#   all    : 전부 true (merge queue)
 #   deploy : 앱별 "마지막 성공 배포 태그(deployed/<app>)" 기준. 태그가 없거나 히스토리에 없으면 true
 #            (배포 대상인 server 만 판단하고 web 은 항상 false. web 은 Vercel 이 배포한다)
 #
@@ -14,7 +17,7 @@ on:
   workflow_call:
     inputs:
       mode:
-        description: 'pr | all | deploy'
+        description: 'pr | push | all | deploy'
         type: string
         default: pr
       base_ref:
@@ -33,8 +36,11 @@ on:
       workflows:
         value: ${{ jobs.detect.outputs.workflows }}
 
+# push 모드는 이전 CI 실행 기록을 조회한다 (actions: read).
+# 재사용 워크플로는 호출한 쪽보다 권한을 늘릴 수 없으므로, 호출하는 job 에도 같은 권한을 준다.
 permissions:
   contents: read
+  actions: read
 
 jobs:
   detect:
@@ -63,6 +69,9 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           BASE_REF: ${{ inputs.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+          # push 이벤트의 브랜치 이름 (push 모드에서만 쓴다)
+          PUSH_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -104,6 +113,18 @@ jobs:
             esac
           }
 
+          from_base() { # $1=기준 커밋 -> 그 이후 변경으로 RES·WORKFLOWS 를 채운다
+            local files
+            files=$(git diff --name-only "$1" "$HEAD_REV")
+            if grep -qE '^\.github/' <<<"$files"; then WORKFLOWS=true; fi
+            if grep -qE "$GLOBAL_RE" <<<"$files"; then
+              for a in $APPS; do RES[$a]=true; done
+            else
+              for a in $APPS; do RES[$a]=$(affected_pkg "${PKG[$a]}" "$1"); done
+            fi
+          }
+
+          BASE_DESC=""
           case "$MODE" in
             all)
               for a in $APPS; do RES[$a]=true; done
@@ -112,12 +133,23 @@ jobs:
             pr)
               [ -n "$BASE_REF" ] || { echo "::error::mode=pr 에는 base_ref 가 필요"; exit 1; }
               base=$(git merge-base "origin/${BASE_REF}" "$HEAD_REV")
-              files=$(git diff --name-only "$base" "$HEAD_REV")
-              if grep -qE '^\.github/' <<<"$files"; then WORKFLOWS=true; fi
-              if grep -qE "$GLOBAL_RE" <<<"$files"; then
-                for a in $APPS; do RES[$a]=true; done
+              BASE_DESC="merge-base(origin/${BASE_REF}) ${base::7}"
+              from_base "$base"
+              ;;
+            push)
+              # 조회 실패는 "기록 없음"으로 넘기지 않고 job 을 실패시킨다 (fail-closed).
+              base=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=${PUSH_BRANCH}&event=push&status=success&per_page=1" \
+                -q '.workflow_runs[0].head_sha // ""') \
+                || { echo "::error::이전 CI 실행 기록 조회 실패"; exit 1; }
+              if [ -n "$base" ] \
+                 && git cat-file -e "${base}^{commit}" 2>/dev/null \
+                 && git merge-base --is-ancestor "$base" "$HEAD_REV"; then
+                BASE_DESC="마지막 성공 push CI ${base::7}"
+                from_base "$base"
               else
-                for a in $APPS; do RES[$a]=$(affected_pkg "${PKG[$a]}" "$base"); done
+                BASE_DESC="성공한 push CI 없음 또는 히스토리에 없음 → 전체 실행"
+                for a in $APPS; do RES[$a]=true; done
+                WORKFLOWS=true
               fi
               ;;
             deploy)
@@ -149,6 +181,8 @@ jobs:
 
           {
             echo "### 변경 영향 (mode=${MODE})"
+            [ -z "$BASE_DESC" ] || echo "기준: ${BASE_DESC}"
+            echo
             echo "| 대상 | 실행 |"
             echo "|---|---|"
             for a in $APPS; do echo "| ${a} | ${RES[$a]} |"; done

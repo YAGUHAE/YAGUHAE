@@ -78,6 +78,9 @@ jobs:
   changes:
     needs: gate
     if: needs.gate.outputs.ok == 'true'
+    permissions:
+      contents: read
+      actions: read # _changes.yml 이 요구하는 권한 (deploy 모드는 쓰지 않음)
     uses: ./.github/workflows/_changes.yml
     with:
       mode: ${{ needs.gate.outputs.mode }}

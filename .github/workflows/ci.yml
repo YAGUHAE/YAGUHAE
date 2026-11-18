@@ -27,10 +27,13 @@ env:
 
 jobs:
   changes:
+    permissions:
+      contents: read
+      actions: read # push 모드: 마지막 성공 CI 조회
     uses: ./.github/workflows/_changes.yml
     with:
-      # PR 은 영향받은 것만, push/merge queue 는 전체 실행한다.
-      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'all' }}
+      # PR 은 base 기준, push 는 마지막 성공 CI 기준으로 영향받은 것만. merge queue 는 전체 실행한다.
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'push' && 'push' || 'all' }}
       base_ref: ${{ github.base_ref }}
 
   workflows-lint:
