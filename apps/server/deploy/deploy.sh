@@ -3,7 +3,7 @@
 #
 #   bash deploy.sh <이미지>     예) bash deploy.sh ghcr.io/yaguhae/yaguhae-server:sha-abc1234
 #
-# 1. 쉬고 있는 색상(Green)으로 새 이미지를 띄운다. 기존 색상(Blue)은 계속 서비스한다.
+# 1. 새 이미지로 DB 마이그레이션을 적용하고, 쉬고 있는 색상(Green)으로 띄운다. 기존 색상(Blue)은 계속 서비스한다.
 # 2. Green 컨테이너 헬스체크가 통과하면 nginx upstream 을 Green 으로 바꾸고 reload 한다.
 # 3. nginx 를 거쳐 /health 를 다시 확인한다.
 # 4. 성공하면 Blue 를 멈춘다. 중간에 실패하면 Blue 로 되돌리고 Green 을 정리한다.
@@ -82,7 +82,10 @@ trap rollback ERR
 # 1. Green 기동
 set_image "$next" "$IMAGE"
 "${COMPOSE[@]}" pull "server-${next}"
-# TODO: DB 마이그레이션이 생기면 여기서 실행한다. Blue 와 같은 DB 를 함께 쓰므로 하위 호환 변경만 허용한다.
+# DB 마이그레이션은 새 컨테이너를 띄우기 전에 새 이미지로 실행한다.
+# Blue 가 같은 DB 를 계속 쓰므로 하위 호환 변경만 허용한다. 실패하면 트래픽 전환 없이 롤백된다.
+log "마이그레이션 적용"
+"${COMPOSE[@]}" run --rm --no-deps -T "server-${next}" node_modules/.bin/prisma migrate deploy
 "${COMPOSE[@]}" up -d --no-deps --force-recreate "server-${next}"
 wait_healthy "yaguhae-server-${next}"
 

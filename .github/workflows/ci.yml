@@ -82,13 +82,45 @@ jobs:
     if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # e2e 와 마이그레이션 검사용 DB. 매 실행마다 빈 DB 로 시작한다.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: yaguhae
+          POSTGRES_PASSWORD: yaguhae
+          POSTGRES_DB: yaguhae
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yaguhae -d yaguhae"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://yaguhae:yaguhae@localhost:5432/yaguhae?schema=public
+      CHECKPOINT_DISABLE: '1'
+      PRISMA_HIDE_UPDATE_MESSAGE: '1'
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           turbo-cache-key: server
-      # 테스트에 DB 가 필요해지면 job 에 services: 를 추가한다.
-      - run: pnpm exec turbo run lint typecheck test test:e2e build --filter=@yaguhae/server
+      - run: pnpm exec turbo run lint typecheck test build --filter=@yaguhae/server
+      # 빈 DB 에 전체 마이그레이션이 적용되는지 확인한다. 배포 때 deploy.sh 가 하는 것과 같다.
+      - name: Apply migrations
+        run: pnpm --filter @yaguhae/server db:deploy
+      # schema.prisma 를 바꾸고 마이그레이션을 만들지 않았으면 실패시킨다.
+      - name: Check schema drift
+        working-directory: apps/server
+        run: |
+          code=0
+          pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code || code=$?
+          if [ "$code" -eq 2 ]; then
+            echo "::error::schema.prisma 변경에 대한 마이그레이션이 없습니다. pnpm --filter @yaguhae/server db:migrate --name <설명> 으로 만드세요."
+          fi
+          exit "$code"
+      - run: pnpm exec turbo run test:e2e --filter=@yaguhae/server
       # 배포 때 처음 깨지지 않도록 이미지 빌드만 검증한다 (push 안 함).
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7

@@ -1,0 +1,14 @@
+// DB 스키마. 바꾼 뒤에는 `pnpm db:migrate --name <설명>` 으로 마이그레이션을 만든다.
+// 부분 unique 인덱스처럼 여기서 표현할 수 없는 제약은 `--create-only` 로 만든 마이그레이션 SQL 에 직접 쓴다.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  // tsc(nodenext) 로 컴파일하므로 생성 코드의 상대 import 를 .js 로 맞춘다.
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}

@@ -29,11 +29,17 @@ RUN pnpm --filter @yaguhae/server deploy --prod --legacy /out
 FROM node:${NODE_VERSION}-alpine AS runner
 ENV NODE_ENV=production
 ENV PORT=4000
+# Prisma CLI 의 업데이트 확인·텔레메트리 요청을 끈다.
+ENV CHECKPOINT_DISABLE=1
+ENV PRISMA_HIDE_UPDATE_MESSAGE=1
 WORKDIR /app
 
 COPY --from=build /out/package.json ./
 COPY --from=build /out/node_modules ./node_modules
 COPY --from=build /out/dist ./dist
+# 배포 때 deploy.sh 가 이 이미지로 `prisma migrate deploy` 를 실행한다.
+COPY --from=build /out/prisma.config.ts ./
+COPY --from=build /out/prisma ./prisma
 
 # node 이미지에 기본으로 있는 비루트 사용자로 실행한다.
 USER node

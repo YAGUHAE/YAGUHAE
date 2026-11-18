@@ -35,15 +35,15 @@ dev/main push ──► ci.yml (전체 실행) ──► ci-ok ──► 실패 
 
 ## 검사 목록
 
-| job              | 하는 일                                                                                    | 실행 조건       |
-| ---------------- | ------------------------------------------------------------------------------------------ | --------------- |
-| `changes`        | 이번 변경이 어떤 앱에 영향을 주는지 판단. 실패하면 곧바로 `ci-ok` 실패                     | 항상            |
-| `workflows-lint` | 워크플로·합성 액션 문법 검사 (actionlint)                                                  | `.github/` 변경 |
-| `commitlint`     | PR 의 모든 커밋 메시지와 PR 제목 검사. squash 머지 시 PR 제목이 커밋이 된다                | PR              |
-| `web`            | `@yaguhae/web` lint · typecheck · test · build                                             | web 영향        |
-| `server`         | `@yaguhae/server` lint · typecheck · test · test:e2e · build + **Docker 이미지 빌드 검증** | server 영향     |
-| **`ci-ok`**      | 위 결과를 모아 판정                                                                        | 항상            |
-| `alert`          | push CI 실패를 이슈로 알림                                                                 | push 실패 시    |
+| job              | 하는 일                                                                                                                               | 실행 조건       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `changes`        | 이번 변경이 어떤 앱에 영향을 주는지 판단. 실패하면 곧바로 `ci-ok` 실패                                                                | 항상            |
+| `workflows-lint` | 워크플로·합성 액션 문법 검사 (actionlint)                                                                                             | `.github/` 변경 |
+| `commitlint`     | PR 의 모든 커밋 메시지와 PR 제목 검사. squash 머지 시 PR 제목이 커밋이 된다                                                           | PR              |
+| `web`            | `@yaguhae/web` lint · typecheck · test · build                                                                                        | web 영향        |
+| `server`         | `@yaguhae/server` lint · typecheck · test · build → 마이그레이션 적용 · 스키마 드리프트 검사 → test:e2e + **Docker 이미지 빌드 검증** | server 영향     |
+| **`ci-ok`**      | 위 결과를 모아 판정                                                                                                                   | 항상            |
+| `alert`          | push CI 실패를 이슈로 알림                                                                                                            | push 실패 시    |
 
 ## 영향 범위 규칙 (PR)
 
@@ -85,6 +85,19 @@ pnpm-lock.yaml  package.json(루트)  .npmrc  .nvmrc
 | Turbo 태스크 결과 | `actions/cache` 로 `.turbo/cache` 보관 (job 별 키). PR 에서 저장한 캐시는 그 PR 에서만 보여 `dev`·`main` 캐시를 오염시키지 않는다 |
 | Docker 레이어     | `type=gha,scope=server`                                                                                                           |
 
+## DB (server job)
+
+server job 은 `postgres:17-alpine` 서비스 컨테이너를 띄우고 `DATABASE_URL` 로 연결한다. 매 실행마다 빈 DB 다.
+
+| 단계               | 하는 일                                                                                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `db:generate`      | Prisma 클라이언트 생성. turbo 가 build·typecheck·lint·test 전에 자동으로 실행한다                          |
+| Apply migrations   | 빈 DB 에 `prisma migrate deploy`. 배포 때와 같은 명령이다                                                  |
+| Check schema drift | 마이그레이션을 적용한 DB 와 `schema.prisma` 를 비교한다. 스키마만 바꾸고 마이그레이션을 안 만들면 실패한다 |
+| test:e2e           | 실제 DB 에 붙는다. `/health` 는 DB 연결까지 확인한다                                                       |
+
+Turbo 는 strict env 모드라서 `DATABASE_URL` 을 `turbo.json` 의 `passThroughEnv` 로 넘긴다.
+
 ## 브랜치 ruleset (`dev`, `main`)
 
 - PR 필수 (리뷰 승인 수 0)
@@ -97,6 +110,7 @@ pnpm-lock.yaml  package.json(루트)  .npmrc  .nvmrc
 pnpm install --frozen-lockfile
 
 pnpm exec turbo run lint typecheck test build --filter=@yaguhae/web
+pnpm --filter @yaguhae/server db:up        # 로컬 Postgres (apps/server/.env 필요)
 pnpm exec turbo run lint typecheck test test:e2e build --filter=@yaguhae/server
 docker build -f apps/server/Dockerfile .
 

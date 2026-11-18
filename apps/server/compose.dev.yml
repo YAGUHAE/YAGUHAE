@@ -1,0 +1,26 @@
+# 로컬 개발용 Postgres. 운영 DB 는 Supabase 다. (docs/infra.md 3.5)
+#   pnpm --filter @yaguhae/server db:up
+# 폴더 이름(server)이 프로젝트 이름이 되면 다른 프로젝트의 볼륨과 겹칠 수 있어 고정한다.
+name: yaguhae-dev
+
+services:
+  postgres:
+    # Supabase 와 같은 메이저 버전
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: yaguhae
+      POSTGRES_PASSWORD: yaguhae
+      POSTGRES_DB: yaguhae
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U yaguhae -d yaguhae']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
