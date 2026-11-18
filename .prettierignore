@@ -2,3 +2,6 @@ pnpm-lock.yaml
 # turbo, next 가 자동으로 생성·갱신하는 파일
 AGENTS.md
 next-env.d.ts
+
+# Prisma 생성 클라이언트
+apps/server/src/generated/

@@ -79,14 +79,14 @@ dev, 작업 브랜치 ──► Vercel Preview 배포
 └─ .env                                                ← 앱 런타임 환경변수 (사람이 직접 작성)
 ```
 
-1. 쉬고 있는 색상으로 새 이미지를 띄운다. 기존 색상은 계속 서비스한다.
+1. 새 이미지로 `prisma migrate deploy` 를 실행한 뒤, 쉬고 있는 색상으로 새 이미지를 띄운다. 기존 색상은 계속 서비스한다.
 2. 새 컨테이너 헬스체크(`/health`)가 통과하면 nginx upstream 을 바꾸고 reload 한다.
 3. nginx 를 거쳐 `/health` 를 다시 확인한다.
 4. 성공하면 이전 색상을 멈춘다. 중간에 실패하면 이전 색상으로 되돌리고 새 컨테이너를 지운다.
 
 로컬 Docker 로 확인한 것: 첫 배포(blue), 두 번째 배포(green 전환, 배포 중 요청 40개 모두 200), 헬스체크 실패 이미지(롤백, 기존 색상 유지, 종료 코드 1).
 
-> DB 마이그레이션이 생기면 `deploy.sh` 의 TODO 위치(새 컨테이너 기동 전)에서 실행한다. 두 색상이 같은 DB 를 잠시 함께 쓰므로 **하위 호환 마이그레이션만** 허용한다.
+> 마이그레이션은 새 이미지로 `docker compose run` 해서 실행하며, `.env` 의 `DATABASE_URL` 을 쓴다. 마이그레이션이 실패하면 트래픽 전환 없이 롤백된다. 두 색상이 같은 DB 를 잠시 함께 쓰므로 **하위 호환 마이그레이션만** 허용한다. 이미 적용된 마이그레이션은 롤백되지 않는다.
 
 ## web 배포 (Vercel)
 
@@ -168,7 +168,7 @@ Vercel 이 레포를 직접 보고 빌드·배포한다. 워크플로 파일은 
     docker compose version
     ```
 
-  - `/opt/yaguhae/.env` 작성 (앱 런타임 환경변수. 지금은 없어도 된다)
+  - `/opt/yaguhae/.env` 작성 (앱 런타임 환경변수). 최소 `DATABASE_URL` (Supabase Session pooler 접속 문자열)이 있어야 마이그레이션과 `/health` 가 통과한다. 항목은 `apps/server/.env.example` 참고. SSM Parameter Store 연동 후에는 이 파일을 쓰지 않는다 ([인프라 설계](infra.md) 3.7)
 - [ ] Systems Manager → Fleet Manager 에서 인스턴스가 **Online** 으로 보이는지 확인
 
 ### 2. GitHub
@@ -206,7 +206,7 @@ Vercel 이 레포를 직접 보고 빌드·배포한다. 워크플로 파일은 
 
 - [ ] `SERVER_DEPLOY_ENABLED=true` 설정
 - [ ] Actions → Deploy → **Run workflow** (`main`) → GHCR public 전환 (위 2번) → 다시 실행
-- [ ] EC2 퍼블릭 IP 로 `curl http://<IP>/health` → `{"status":"ok"}`
+- [ ] EC2 퍼블릭 IP 로 `curl http://<IP>/health` → `{"status":"ok"}` (DB 연결까지 확인한다)
 - [ ] 이후에는 `dev` → `main` 머지만 하면 자동 배포된다.
 
 ## 운영
@@ -223,6 +223,5 @@ Vercel 이 레포를 직접 보고 빌드·배포한다. 워크플로 파일은 
 ## 아직 없는 것 (필요할 때 추가)
 
 - HTTPS: 도메인 연결 후 certbot(nginx) 또는 ALB + ACM
-- DB 와 마이그레이션 단계
 - 스테이징 환경 (`dev` 배포)
 - 배포 실패 알림 채널 (지금은 GitHub 이슈만)

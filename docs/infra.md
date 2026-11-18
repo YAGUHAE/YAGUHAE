@@ -174,9 +174,9 @@ PRD 는 `@nestjs/schedule` 과 "API 단일 인스턴스"를 전제로 하지만,
 - [ ] nginx HTTPS(443) 와 certbot 자동 갱신
 - [ ] `deploy.sh` 가 SSM Parameter Store 에서 시크릿을 읽도록 변경
 - [ ] ARM 인스턴스에 맞는 Docker 이미지 빌드(`linux/arm64`) 또는 인스턴스 아키텍처 재결정
-- [ ] Prisma 설정, `@nestjs-cls/transactional`, 마이그레이션과 배포 연동 (`deploy.sh` TODO 위치)
+- [x] Prisma 설정, `@nestjs-cls/transactional`, 마이그레이션과 배포 연동 (#15)
 - [ ] Cron 작업의 advisory lock 래퍼
-- [ ] 로컬 개발용 Postgres `docker-compose.yml`
+- [x] 로컬 개발용 Postgres `apps/server/compose.dev.yml` (#15)
 - [ ] Sentry, UptimeRobot 연동
 - [ ] PWA (manifest, 서비스워커, 오프라인 폴백, 카카오 인앱 안내)
 - [ ] 알림톡 발송 대행사 선정 (사업자 등록, 비즈니스 채널 개설 선행)

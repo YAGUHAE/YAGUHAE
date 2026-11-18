@@ -19,3 +19,6 @@ dist/
 .next/
 coverage/
 *.tsbuildinfo
+
+# Prisma 생성 클라이언트 (pnpm db:generate)
+apps/server/src/generated/
