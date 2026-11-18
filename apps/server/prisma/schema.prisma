@@ -1,5 +1,7 @@
-// DB 스키마. 바꾼 뒤에는 `pnpm db:migrate --name <설명>` 으로 마이그레이션을 만든다.
-// 부분 unique 인덱스처럼 여기서 표현할 수 없는 제약은 `--create-only` 로 만든 마이그레이션 SQL 에 직접 쓴다.
+// DB 스키마. 설계 근거는 docs/design/erd.md 를 따른다.
+// 바꾼 뒤에는 `pnpm db:migrate --name <설명>` 으로 마이그레이션을 만든다.
+// 부분 unique 인덱스·check 제약처럼 여기서 표현할 수 없는 제약은 `--create-only` 로 만든 마이그레이션 SQL 에 직접 쓴다.
+// (현재 목록: 초기 마이그레이션 하단 "Prisma 스키마 밖의 제약" 블록)
 
 generator client {
   provider            = "prisma-client"
@@ -11,4 +13,599 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ─── Enum (packages/shared 와 값이 같아야 한다) ──────────────────────────
+
+enum UserRole {
+  PLAYER
+  HOST
+  ADMIN
+
+  @@map("user_role")
+}
+
+enum PhoneSource {
+  KAKAO
+  MANUAL
+
+  @@map("phone_source")
+}
+
+enum Position {
+  SP
+  RP
+  C
+  FIRST_BASE
+  SECOND_BASE
+  THIRD_BASE
+  SS
+  LF
+  CF
+  RF
+  DH
+
+  @@map("position")
+}
+
+/// 선공 / 후공
+enum TeamSide {
+  FIRST
+  SECOND
+
+  @@map("team_side")
+}
+
+enum Grade {
+  DIV_1
+  DIV_2
+  DIV_3
+  DIV_4
+  ROOKIE
+
+  @@map("grade")
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+
+  @@map("review_status")
+}
+
+/// 저장하는 경기 상태. OPEN / FULL / CLOSED / FINISHED 는 시각과 자리 상태로 계산한다 (erd.md 6장)
+enum GameStatus {
+  SCHEDULED
+  CANCELLED
+
+  @@map("game_status")
+}
+
+enum GameCancelReason {
+  RAIN
+  STADIUM
+  LACK_OF_PLAYERS
+  OTHER
+
+  @@map("game_cancel_reason")
+}
+
+enum ReservationStatus {
+  RESERVED
+  PAYMENT_SUBMITTED
+  APPROVED
+  EXPIRED
+  CANCELLED
+  REJECTED
+  GAME_CANCELLED
+  ATTENDED
+  NO_SHOW
+
+  @@map("reservation_status")
+}
+
+enum ExpireReason {
+  PAYMENT_TIMEOUT
+  APPROVAL_TIMEOUT
+
+  @@map("expire_reason")
+}
+
+enum UserReviewReason {
+  NO_SHOW_THRESHOLD
+
+  @@map("user_review_reason")
+}
+
+enum UserReviewStatus {
+  PENDING
+  SUSPENDED
+  DISMISSED
+
+  @@map("user_review_status")
+}
+
+enum SuspensionSource {
+  NO_SHOW_REVIEW
+  REPORT
+  ADMIN
+
+  @@map("suspension_source")
+}
+
+enum ReportReason {
+  BAD_MANNER
+  ABUSE
+  FALSE_INFO
+  FRAUD
+  OTHER
+
+  @@map("report_reason")
+}
+
+enum ReportStatus {
+  PENDING
+  WARNED
+  SUSPENDED
+  DISMISSED
+
+  @@map("report_status")
+}
+
+enum AppealType {
+  NO_SHOW
+  EVALUATION
+
+  @@map("appeal_type")
+}
+
+enum AppealStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+
+  @@map("appeal_status")
+}
+
+enum NotificationType {
+  PAYMENT_DEADLINE_12H
+  PAYMENT_DEADLINE_1H
+  RESERVATION_APPROVED
+  RESERVATION_REJECTED
+  RESERVATION_EXPIRED
+  APPROVAL_REMINDER
+  RESERVATION_CANCELLED
+  GAME_CANCELLED
+  ATTENDANCE_REMINDER
+  EVALUATION_OPENED
+  REPORT_RESOLVED
+
+  @@map("notification_type")
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+
+  @@map("notification_status")
+}
+
+// ─── 계정 ─────────────────────────────────────────────────────────────
+
+/// 카카오 계정 1개 = 사용자 1명. 정지 여부는 user_suspensions 로 판단한다
+model User {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  kakaoId     String       @unique @map("kakao_id")
+  roles       UserRole[]   @default([PLAYER])
+  phone       String?
+  phoneSource PhoneSource? @map("phone_source")
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  playerProfile PlayerProfile?
+  hostProfile   HostProfile?
+
+  hostApplications         HostApplication[] @relation("HostApplicant")
+  reviewedHostApplications HostApplication[] @relation("HostApplicationReviewer")
+  userReviews              UserReview[]      @relation("ReviewedUser")
+  decidedUserReviews       UserReview[]      @relation("UserReviewDecider")
+  suspensions              UserSuspension[]  @relation("SuspendedUser")
+  createdSuspensions       UserSuspension[]  @relation("SuspensionCreator")
+  requestedStadiums        Stadium[]         @relation("StadiumRequester")
+  reviewedStadiums         Stadium[]         @relation("StadiumReviewer")
+  hostedGames              Game[]
+  reservations             Reservation[]
+  givenEvaluations         Evaluation[]      @relation("Evaluator")
+  receivedEvaluations      Evaluation[]      @relation("EvaluationTarget")
+  castVotes                BestPlayerVote[]  @relation("Voter")
+  receivedVotes            BestPlayerVote[]  @relation("VoteTarget")
+  filedReports             Report[]          @relation("Reporter")
+  receivedReports          Report[]          @relation("ReportTarget")
+  handledReports           Report[]          @relation("ReportHandler")
+  appeals                  Appeal[]          @relation("Appellant")
+  handledAppeals           Appeal[]          @relation("AppealHandler")
+  notifications            Notification[]
+
+  @@map("users")
+}
+
+/// 선수 카드. 행이 있으면 필수 항목을 다 채운 것이다 (정책 2.1)
+model PlayerProfile {
+  userId        String     @id @map("user_id") @db.Uuid
+  nickname      String     @unique
+  regionCode    String     @map("region_code") @db.Char(5)
+  mainPosition  Position   @map("main_position")
+  subPositions  Position[] @default([]) @map("sub_positions")
+  grade         Grade
+  isFormerPro   Boolean    @default(false) @map("is_former_pro")
+  gameoneUrl    String?    @map("gameone_url")
+  uniqueplayUrl String?    @map("uniqueplay_url")
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+
+  user   User   @relation(fields: [userId], references: [id])
+  region Region @relation(fields: [regionCode], references: [code])
+
+  @@index([regionCode])
+  @@map("player_profiles")
+}
+
+/// 주최자 신청 (정책 2.2). 사용자당 PENDING 1개 (부분 unique)
+model HostApplication {
+  id           String       @id @default(uuid(7)) @db.Uuid
+  userId       String       @map("user_id") @db.Uuid
+  contactPhone String       @map("contact_phone")
+  leaguesNote  String       @map("leagues_note")
+  status       ReviewStatus @default(PENDING)
+  reviewedBy   String?      @map("reviewed_by") @db.Uuid
+  reviewedAt   DateTime?    @map("reviewed_at") @db.Timestamptz
+  rejectReason String?      @map("reject_reason")
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  user     User  @relation("HostApplicant", fields: [userId], references: [id])
+  reviewer User? @relation("HostApplicationReviewer", fields: [reviewedBy], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("host_applications")
+}
+
+/// 주최자 기본 입금 계좌. 경기 개설 때 미리 채운다
+model HostProfile {
+  userId        String   @id @map("user_id") @db.Uuid
+  bankName      String   @map("bank_name")
+  accountNumber String   @map("account_number")
+  accountHolder String   @map("account_holder")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("host_profiles")
+}
+
+/// 노쇼 2회 도달 시 관리자 검토 대상 (D14). 사용자당 PENDING 1개 (부분 unique)
+model UserReview {
+  id        String           @id @default(uuid(7)) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  reason    UserReviewReason
+  status    UserReviewStatus @default(PENDING)
+  decidedBy String?          @map("decided_by") @db.Uuid
+  decidedAt DateTime?        @map("decided_at") @db.Timestamptz
+  note      String?
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+
+  user        User             @relation("ReviewedUser", fields: [userId], references: [id])
+  decider     User?            @relation("UserReviewDecider", fields: [decidedBy], references: [id])
+  suspensions UserSuspension[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("user_reviews")
+}
+
+/// 정지 이력. ends_at NULL = 관리자가 해제할 때까지
+model UserSuspension {
+  id           String           @id @default(uuid(7)) @db.Uuid
+  userId       String           @map("user_id") @db.Uuid
+  source       SuspensionSource
+  userReviewId String?          @map("user_review_id") @db.Uuid
+  reportId     String?          @map("report_id") @db.Uuid
+  reason       String
+  startsAt     DateTime         @map("starts_at") @db.Timestamptz
+  endsAt       DateTime?        @map("ends_at") @db.Timestamptz
+  liftedAt     DateTime?        @map("lifted_at") @db.Timestamptz
+  createdBy    String           @map("created_by") @db.Uuid
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+
+  user       User        @relation("SuspendedUser", fields: [userId], references: [id])
+  creator    User        @relation("SuspensionCreator", fields: [createdBy], references: [id])
+  userReview UserReview? @relation(fields: [userReviewId], references: [id])
+  report     Report?     @relation(fields: [reportId], references: [id])
+
+  @@index([userId])
+  @@map("user_suspensions")
+}
+
+// ─── 지역·리그·구장 ───────────────────────────────────────────────────
+
+/// 시/군/구 행정표준코드 5자리
+model Region {
+  code      String   @id @db.Char(5)
+  sido      String
+  sigungu   String
+  isActive  Boolean  @default(false) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  playerProfiles PlayerProfile[]
+  leagues        League[]
+  stadiums       Stadium[]
+
+  @@map("regions")
+}
+
+model League {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  regionCode String   @map("region_code") @db.Char(5)
+  name       String
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  region   Region    @relation(fields: [regionCode], references: [code])
+  stadiums Stadium[]
+
+  @@unique([regionCode, name])
+  @@map("leagues")
+}
+
+/// 구장은 리그 1개에만 소속 (D10). 시드는 APPROVED, 주최자 요청은 PENDING 으로 시작
+model Stadium {
+  id           String       @id @default(uuid(7)) @db.Uuid
+  leagueId     String       @map("league_id") @db.Uuid
+  regionCode   String       @map("region_code") @db.Char(5)
+  name         String
+  address      String?
+  status       ReviewStatus
+  requestedBy  String?      @map("requested_by") @db.Uuid
+  reviewedBy   String?      @map("reviewed_by") @db.Uuid
+  reviewedAt   DateTime?    @map("reviewed_at") @db.Timestamptz
+  rejectReason String?      @map("reject_reason")
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  league    League @relation(fields: [leagueId], references: [id])
+  region    Region @relation(fields: [regionCode], references: [code])
+  requester User?  @relation("StadiumRequester", fields: [requestedBy], references: [id])
+  reviewer  User?  @relation("StadiumReviewer", fields: [reviewedBy], references: [id])
+  games     Game[]
+
+  @@unique([leagueId, name])
+  @@index([regionCode])
+  @@index([status])
+  @@map("stadiums")
+}
+
+// ─── 경기 ─────────────────────────────────────────────────────────────
+
+/// 경기 1회. 더블헤더는 경기 2개로 나눠 series_id 로 묶는다
+model Game {
+  id                 String            @id @default(uuid(7)) @db.Uuid
+  hostId             String            @map("host_id") @db.Uuid
+  stadiumId          String            @map("stadium_id") @db.Uuid
+  seriesId           String?           @map("series_id") @db.Uuid
+  seriesNo           Int?              @map("series_no") @db.SmallInt
+  startsAt           DateTime          @map("starts_at") @db.Timestamptz
+  endsAt             DateTime          @map("ends_at") @db.Timestamptz
+  fee                Int
+  allowedGrades      Grade[]           @map("allowed_grades")
+  allowsFormerPro    Boolean           @default(true) @map("allows_former_pro")
+  notice             String?
+  /// 개설 시점 계좌 스냅샷
+  bankName           String            @map("bank_name")
+  accountNumber      String            @map("account_number")
+  accountHolder      String            @map("account_holder")
+  status             GameStatus        @default(SCHEDULED)
+  /// 목록 정렬 기준. 끌어올리기 때 갱신 (정책 6.4)
+  bumpedAt           DateTime          @default(now()) @map("bumped_at") @db.Timestamptz
+  cancelReason       GameCancelReason? @map("cancel_reason")
+  cancelReasonDetail String?           @map("cancel_reason_detail")
+  cancelledAt        DateTime?         @map("cancelled_at") @db.Timestamptz
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+
+  host            User             @relation(fields: [hostId], references: [id])
+  stadium         Stadium          @relation(fields: [stadiumId], references: [id])
+  slots           GameSlot[]
+  reservations    Reservation[]
+  evaluations     Evaluation[]
+  bestPlayerVotes BestPlayerVote[]
+  reports         Report[]
+  notifications   Notification[]
+
+  @@unique([seriesId, seriesNo])
+  @@index([bumpedAt])
+  @@index([startsAt])
+  @@index([stadiumId, startsAt])
+  @@index([hostId, startsAt])
+  @@map("games")
+}
+
+/// 경기 자리. 경기마다 선공·후공 × 포지션 11개 = 22행. 자리당 1명이며 동시 예약의 락 대상
+model GameSlot {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  gameId    String    @map("game_id") @db.Uuid
+  side      TeamSide
+  position  Position
+  /// 주최자가 마감한 자리 (앱 밖에서 충원). NULL 이면 모집 중
+  closedAt  DateTime? @map("closed_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  game         Game          @relation(fields: [gameId], references: [id])
+  reservations Reservation[]
+
+  @@unique([gameId, side, position])
+  // reservations 가 (자리, 경기)를 함께 참조해 다른 경기의 자리를 가리키지 못하게 한다
+  @@unique([id, gameId])
+  @@map("game_slots")
+}
+
+// ─── 예약 ─────────────────────────────────────────────────────────────
+
+/// 자리당 활성 예약 1개, 경기·사용자당 활성 예약 1개 (부분 unique, 마이그레이션 SQL)
+model Reservation {
+  id                 String            @id @default(uuid(7)) @db.Uuid
+  gameId             String            @map("game_id") @db.Uuid
+  gameSlotId         String            @map("game_slot_id") @db.Uuid
+  userId             String            @map("user_id") @db.Uuid
+  status             ReservationStatus @default(RESERVED)
+  depositorName      String            @map("depositor_name")
+  reservedAt         DateTime          @default(now()) @map("reserved_at") @db.Timestamptz
+  /// min(reserved_at + 24h, games.starts_at)
+  paymentDeadlineAt  DateTime          @map("payment_deadline_at") @db.Timestamptz
+  paymentSubmittedAt DateTime?         @map("payment_submitted_at") @db.Timestamptz
+  approvedAt         DateTime?         @map("approved_at") @db.Timestamptz
+  rejectedAt         DateTime?         @map("rejected_at") @db.Timestamptz
+  cancelledAt        DateTime?         @map("cancelled_at") @db.Timestamptz
+  cancelReason       String?           @map("cancel_reason")
+  expiredAt          DateTime?         @map("expired_at") @db.Timestamptz
+  expireReason       ExpireReason?     @map("expire_reason")
+  attendanceMarkedAt DateTime?         @map("attendance_marked_at") @db.Timestamptz
+  attendanceAuto     Boolean           @default(false) @map("attendance_auto")
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+
+  game          Game           @relation(fields: [gameId], references: [id])
+  slot          GameSlot       @relation(fields: [gameSlotId, gameId], references: [id, gameId])
+  user          User           @relation(fields: [userId], references: [id])
+  appeals       Appeal[]
+  notifications Notification[]
+
+  @@index([gameSlotId])
+  @@index([userId, status])
+  @@index([gameId, status])
+  @@map("reservations")
+}
+
+// ─── 경기 후 ──────────────────────────────────────────────────────────
+
+model Evaluation {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  gameId      String   @map("game_id") @db.Uuid
+  evaluatorId String   @map("evaluator_id") @db.Uuid
+  targetId    String   @map("target_id") @db.Uuid
+  manner      Int      @db.SmallInt
+  skillMatch  Int      @map("skill_match") @db.SmallInt
+  punctuality Int      @db.SmallInt
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  game      Game     @relation(fields: [gameId], references: [id])
+  evaluator User     @relation("Evaluator", fields: [evaluatorId], references: [id])
+  target    User     @relation("EvaluationTarget", fields: [targetId], references: [id])
+  appeals   Appeal[]
+
+  @@unique([gameId, evaluatorId, targetId])
+  @@index([targetId])
+  @@map("evaluations")
+}
+
+/// 경기당 1인 1표
+model BestPlayerVote {
+  gameId    String   @map("game_id") @db.Uuid
+  voterId   String   @map("voter_id") @db.Uuid
+  targetId  String   @map("target_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  game   Game @relation(fields: [gameId], references: [id])
+  voter  User @relation("Voter", fields: [voterId], references: [id])
+  target User @relation("VoteTarget", fields: [targetId], references: [id])
+
+  @@id([gameId, voterId])
+  @@index([targetId])
+  @@map("best_player_votes")
+}
+
+model Report {
+  id           String       @id @default(uuid(7)) @db.Uuid
+  reporterId   String       @map("reporter_id") @db.Uuid
+  targetUserId String       @map("target_user_id") @db.Uuid
+  gameId       String       @map("game_id") @db.Uuid
+  reason       ReportReason
+  detail       String?
+  status       ReportStatus @default(PENDING)
+  handledBy    String?      @map("handled_by") @db.Uuid
+  handledAt    DateTime?    @map("handled_at") @db.Timestamptz
+  /// 내부 메모 (비공개)
+  handleNote   String?      @map("handle_note")
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  reporter    User             @relation("Reporter", fields: [reporterId], references: [id])
+  targetUser  User             @relation("ReportTarget", fields: [targetUserId], references: [id])
+  handler     User?            @relation("ReportHandler", fields: [handledBy], references: [id])
+  game        Game             @relation(fields: [gameId], references: [id])
+  suspensions UserSuspension[]
+
+  @@index([status])
+  @@index([targetUserId])
+  @@map("reports")
+}
+
+/// 대상별 PENDING 1개 (부분 unique). type 에 맞는 대상 1개만 채운다 (check)
+model Appeal {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  userId        String       @map("user_id") @db.Uuid
+  type          AppealType
+  reservationId String?      @map("reservation_id") @db.Uuid
+  evaluationId  String?      @map("evaluation_id") @db.Uuid
+  reason        String
+  status        AppealStatus @default(PENDING)
+  handledBy     String?      @map("handled_by") @db.Uuid
+  handledAt     DateTime?    @map("handled_at") @db.Timestamptz
+  handleNote    String?      @map("handle_note")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  user        User         @relation("Appellant", fields: [userId], references: [id])
+  handler     User?        @relation("AppealHandler", fields: [handledBy], references: [id])
+  reservation Reservation? @relation(fields: [reservationId], references: [id])
+  evaluation  Evaluation?  @relation(fields: [evaluationId], references: [id])
+
+  @@index([status])
+  @@index([userId])
+  @@map("appeals")
+}
+
+// ─── 알림 ─────────────────────────────────────────────────────────────
+
+/// 알림톡 발송 로그. dedupe_key unique 가 중복 발송의 마지막 방어선이다
+model Notification {
+  id            String             @id @default(uuid(7)) @db.Uuid
+  userId        String             @map("user_id") @db.Uuid
+  type          NotificationType
+  /// 예: PAYMENT_DEADLINE_1H:<reservation_id>
+  dedupeKey     String             @unique @map("dedupe_key")
+  reservationId String?            @map("reservation_id") @db.Uuid
+  gameId        String?            @map("game_id") @db.Uuid
+  payload       Json               @default("{}")
+  status        NotificationStatus @default(PENDING)
+  sentAt        DateTime?          @map("sent_at") @db.Timestamptz
+  error         String?
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+
+  user        User         @relation(fields: [userId], references: [id])
+  reservation Reservation? @relation(fields: [reservationId], references: [id])
+  game        Game?        @relation(fields: [gameId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("notifications")
 }
