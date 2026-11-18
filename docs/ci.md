@@ -4,18 +4,18 @@ PR 과 `dev`·`main` push 를 검증한다. 기준 파일은 `.github/workflows/
 
 ## 한눈에 보기
 
-| 항목      | 내용                                                      |
-| --------- | --------------------------------------------------------- |
-| 필수 체크 | **`ci-ok` 하나** (브랜치 ruleset)                         |
-| 검사 범위 | PR 은 영향받은 앱만, `dev`·`main` push 는 전체            |
-| 빌드 도구 | pnpm + Turborepo. Turbo 캐시는 GitHub Actions 캐시에 보관 |
-| 알림      | `dev`·`main` push 의 CI 가 실패하면 GitHub 이슈 자동 생성 |
-| 시크릿    | 사용하지 않음 (`GITHUB_TOKEN` 만 사용)                    |
+| 항목      | 내용                                                        |
+| --------- | ----------------------------------------------------------- |
+| 필수 체크 | **`ci-ok` 하나** (브랜치 ruleset)                           |
+| 검사 범위 | 영향받은 앱만. PR 은 base 기준, push 는 마지막 성공 CI 기준 |
+| 빌드 도구 | pnpm + Turborepo. Turbo 캐시는 GitHub Actions 캐시에 보관   |
+| 알림      | `dev`·`main` push 의 CI 가 실패하면 GitHub 이슈 자동 생성   |
+| 시크릿    | 사용하지 않음 (`GITHUB_TOKEN` 만 사용)                      |
 
 ### 원칙
 
 1. **필수 체크는 하나만**: `ci-ok` 가 모든 job 결과를 모아 판정한다. job 을 추가하거나 건너뛰어도 ruleset 은 그대로다.
-2. **PR 은 영향받은 것만, push 는 전체**: PR 은 빠르게, push 는 이전 실패가 가려지지 않게 전부 돌린다.
+2. **영향받은 것만, 실패는 가려지지 않게**: push 는 직전 커밋이 아니라 **마지막으로 성공한 push CI** 와 비교한다. 이전 push 가 실패했으면 그 변경도 다시 검사한다.
 3. **Fail-closed**: 변경 감지가 실패하거나 모호하면 통과시키지 않고 실패시킨다.
 4. **캐시는 최적화일 뿐**: 캐시 복원이 실패해도 CI 는 계속된다.
 
@@ -30,7 +30,7 @@ PR ──► ci.yml
         commitlint             항상 (PR 만)
         └─► ci-ok  ◄── 유일한 필수 체크
 
-dev/main push ──► ci.yml (전체 실행) ──► ci-ok ──► 실패 시 alert (이슈 생성)
+dev/main push ──► ci.yml (마지막 성공 CI 기준 영향 판단) ──► ci-ok ──► 실패 시 alert (이슈 생성)
 ```
 
 ## 검사 목록
@@ -45,7 +45,15 @@ dev/main push ──► ci.yml (전체 실행) ──► ci-ok ──► 실패 
 | **`ci-ok`**      | 위 결과를 모아 판정                                                                                                                   | 항상            |
 | `alert`          | push CI 실패를 이슈로 알림                                                                                                            | push 실패 시    |
 
-## 영향 범위 규칙 (PR)
+## 영향 범위 규칙
+
+| 이벤트            | 비교 기준                                                                                          |
+| ----------------- | -------------------------------------------------------------------------------------------------- |
+| PR                | PR base 브랜치와의 merge-base                                                                      |
+| `dev`·`main` push | 같은 브랜치에서 마지막으로 **성공한** push CI 의 커밋. 없거나 히스토리에 없으면(강제 push 등) 전체 |
+| merge queue       | 전체                                                                                               |
+
+push 의 기준 커밋은 GitHub API(`actions/workflows/ci.yml/runs?status=success`)로 찾는다. 그래서 `changes` job 에 `actions: read` 권한이 필요하다. 조회에 실패하면 전체 실행으로 넘기지 않고 `changes` 를 실패시킨다 (fail-closed).
 
 `_changes.yml` 이 `turbo query affected` 로 패키지별 영향 여부를 묻는다. Turbo 패키지 그래프를 따르므로 의존하는 패키지가 바뀌면 함께 영향받는다.
 
@@ -67,7 +75,7 @@ pnpm-lock.yaml  package.json(루트)  .npmrc  .nvmrc
 
 **패키지 이름 가드**: `turbo query affected` 는 없는 패키지 이름에도 오류 없이 "영향 없음"으로 답한다. 이름이 틀리면 그 앱의 CI 가 조용히 건너뛰어지므로, `changes` 는 `turbo ls` 로 `PKG_*` 가 모두 있는지 먼저 확인하고 없으면 실패한다.
 
-판단 결과는 `changes` job 의 **실행 요약(Summary)** 에 표로 나온다. "왜 이 검사가 안 돌았지?" 는 여기서 확인한다.
+판단 결과와 비교 기준 커밋은 `changes` job 의 **실행 요약(Summary)** 에 나온다. "왜 이 검사가 안 돌았지?" 는 여기서 확인한다.
 
 ## `ci-ok` 판정
 
