@@ -31,7 +31,7 @@ MVP 배포·운영 인프라의 구성과 결정 사항을 정리한다. 기준 
 
 | 영역            | 결정                                                                                 |
 | --------------- | ------------------------------------------------------------------------------------ |
-| ORM             | TypeORM + `typeorm-transactional` (PRD 유지)                                         |
+| ORM             | Prisma + `@nestjs-cls/transactional` (PRD v2.5)                                      |
 | 앱 이름         | `apps/server` 로 통일 (PRD 의 `apps/api` 표기를 수정)                                |
 | Cron 중복 실행  | DB advisory lock 으로 한 인스턴스만 실행                                             |
 | HTTPS           | EC2 의 nginx + Let's Encrypt (certbot)                                               |
@@ -99,11 +99,11 @@ MVP 배포·운영 인프라의 구성과 결정 사항을 정리한다. 기준 
 - 서울 리전(ap-northeast-2). **리전은 만든 뒤 바꿀 수 없다.**
 - 접속은 **Session pooler(5432)**. EC2 는 IPv4 라 direct connection(IPv6)을 쓸 수 없고, 장기 실행 서버에서는 Transaction pooler(6543)를 쓰지 않는다.
 - Auth, RLS, Realtime, pg_cron 은 쓰지 않는다. 다만 Supabase 가 Data API 를 노출하므로 `public` 테이블에는 RLS 를 켜고 정책을 두지 않아(= 전부 차단) 외부에서 직접 접근하지 못하게 한다.
-- Blue-Green 중에는 두 컨테이너가 같은 DB 에 접속한다. TypeORM 커넥션 풀 크기를 작게(예: 컨테이너당 10 이하) 잡고 pooler 연결 한도를 넘지 않는지 확인한다.
-- 마이그레이션은 앱 교체 전에 같은 접속 문자열로 실행한다. 두 색상이 잠시 같은 DB 를 쓰므로 **하위 호환 마이그레이션만** 허용한다.
+- Blue-Green 중에는 두 컨테이너가 같은 DB 에 접속한다. Prisma 드라이버 어댑터(`@prisma/adapter-pg`)의 커넥션 풀 크기를 작게(예: 컨테이너당 10 이하) 잡고 pooler 연결 한도를 넘지 않는지 확인한다.
+- 마이그레이션은 앱 교체 전에 같은 접속 문자열로 `prisma migrate deploy` 를 실행한다. 두 색상이 잠시 같은 DB 를 쓰므로 **하위 호환 마이그레이션만** 허용한다.
 - 백업: 개발 중 Free 는 자동 백업이 없다. 실사용자 데이터가 들어오기 전(베타 오픈 전)에 Pro 로 올리고 일일 백업을 확보한다.
 - Free 는 일정 기간 비활성이면 프로젝트가 일시정지된다. 개발 중에는 UptimeRobot 의 `/health` 호출이 DB 를 건드리게 하거나, 정지되면 대시보드에서 복구한다.
-- 로컬은 `docker compose` 의 Postgres. `synchronize: false` 로 마이그레이션만 쓴다.
+- 로컬은 `docker compose` 의 Postgres. 스키마는 `prisma migrate dev` 로 만든 마이그레이션으로만 바꾼다 (`prisma db push` 는 쓰지 않는다).
 
 ### 3.6 Cron 중복 실행 방지
 
@@ -174,7 +174,7 @@ PRD 는 `@nestjs/schedule` 과 "API 단일 인스턴스"를 전제로 하지만,
 - [ ] nginx HTTPS(443) 와 certbot 자동 갱신
 - [ ] `deploy.sh` 가 SSM Parameter Store 에서 시크릿을 읽도록 변경
 - [ ] ARM 인스턴스에 맞는 Docker 이미지 빌드(`linux/arm64`) 또는 인스턴스 아키텍처 재결정
-- [ ] TypeORM 설정, `typeorm-transactional`, 마이그레이션과 배포 연동 (`deploy.sh` TODO 위치)
+- [ ] Prisma 설정, `@nestjs-cls/transactional`, 마이그레이션과 배포 연동 (`deploy.sh` TODO 위치)
 - [ ] Cron 작업의 advisory lock 래퍼
 - [ ] 로컬 개발용 Postgres `docker-compose.yml`
 - [ ] Sentry, UptimeRobot 연동

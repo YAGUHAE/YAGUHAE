@@ -21,6 +21,7 @@
 | v2.2 | 2026-10-13 | 결정 사항 5건 추가 (D10 리그 개념, D11 알림톡, D12 노쇼 정책, D13 채팅 MVP 이후, D14 노쇼 정지 관리자 검토). 상태 모델의 `PAYMENT_SUBMITTED → CANCELLED` 전이 누락 수정 |
 | v2.3 | 2026-10-13 | Status Approved. 비기능 요구사항(5장), 베타 오픈 조건(11장), 부록 A(철회된 결정·채팅 메모) 추가. 세부 규칙은 정책 명세서로 분리                                         |
 | v2.4 | 2026-10-27 | 인프라 설계 결정 반영 (앱 이름 `apps/server`, Cron advisory lock, 시크릿 SSM, DNS Route 53, 모니터링 Sentry+UptimeRobot). 상세는 [인프라 설계](../infra.md)             |
+| v2.5 | 2026-11-18 | ORM을 TypeORM에서 Prisma로 변경 (7.1~7.3, 9장 D8, 11장 일정, 부록 A)                                                                                                    |
 
 ---
 
@@ -268,7 +269,7 @@ pnpm workspaces + Turborepo 기반 모노레포로 프론트엔드와 백엔드�
 yaguhae/
 ├─ apps/
 │  ├─ web/            # Next.js (App Router)
-│  └─ server/         # NestJS (+ TypeORM Entity, Migration)
+│  └─ server/         # NestJS (+ Prisma schema, Migration)
 ├─ packages/
 │  ├─ shared/         # 상태 enum, 상수, 검증 스키마, 공용 타입 (런타임 의존성 최소)
 │  ├─ api-client/     # OpenAPI 스펙 기반 생성 클라이언트 (orval)
@@ -280,7 +281,7 @@ yaguhae/
 
 **패키지 경계 원칙**
 
-- TypeORM Entity 클래스는 `apps/server` 내부에만 둔다. `packages/shared`에는 데코레이터나 `reflect-metadata`에 의존하지 않는 순수 타입·enum·상수만 둔다. (Entity가 web 번들에 섞이는 것을 방지)
+- Prisma 스키마와 생성된 클라이언트(`PrismaClient`, 모델 타입)는 `apps/server` 내부에만 둔다. `packages/shared`에는 런타임 의존성이 없는 순수 타입·enum·상수만 둔다. (DB 클라이언트와 모델 타입이 web 번들에 섞이는 것을 방지)
 - `apps/web`은 `packages/api-client`를 통해서만 API를 호출한다.
 
 ### 7.2 기술 스택
@@ -290,8 +291,8 @@ yaguhae/
 | 모노레포          | pnpm workspaces + Turborepo                                | 빌드 캐시, `turbo prune`으로 앱별 Docker 빌드                                                                                                                                                                        |
 | 백엔드 프레임워크 | NestJS (`apps/server`)                                     | 모듈 구조, DI, 데코레이터 기반                                                                                                                                                                                       |
 | 프론트엔드        | Next.js App Router (`apps/web`)                            |                                                                                                                                                                                                                      |
-| ORM               | TypeORM (`@nestjs/typeorm`)                                | Nest 모듈·DI 구조와 자연스럽게 통합. 데코레이터 기반 Entity. `pessimistic_write` 락으로 동시 예약 경쟁 처리                                                                                                          |
-| 트랜잭션          | `typeorm-transactional`                                    | 서비스 메서드에 `@Transactional()` 선언. 앱 부트스트랩 전 `initializeTransactionalContext()`, DataSource 생성 시 `addTransactionalDataSource()` 등록                                                                 |
+| ORM               | Prisma (`prisma-client` 생성기 + `@prisma/adapter-pg`)     | 스키마 파일 하나로 모델·마이그레이션 관리, 생성된 클라이언트로 쿼리 타입 안전. ESM 서버와 호환. 행 락(`SELECT ... FOR UPDATE`)은 트랜잭션 안에서 `$queryRaw`로 처리                                                  |
+| 트랜잭션          | `@nestjs-cls/transactional` + Prisma 어댑터                | 서비스 메서드에 `@Transactional()` 선언. `ClsModule`에 `ClsPluginTransactional`과 `TransactionalAdapterPrisma`를 등록하고, 쿼리는 `TransactionHost`의 `tx`로 실행                                                    |
 | DB                | PostgreSQL on Supabase (DB만 사용)                         | Supabase Auth·RLS 정책·Realtime·pg_cron은 사용하지 않음. 리전은 서울(ap-northeast-2). 접속은 Session pooler 사용. 로컬 개발은 Docker Postgres                                                                        |
 | API 계약          | `@nestjs/swagger` → OpenAPI → orval                        | 클라이언트 + React Query 훅 자동 생성. API 변경이 FE 타입 에러로 즉시 드러남                                                                                                                                         |
 | 인증              | Passport.js + JWT (access/refresh) + 카카오 OAuth strategy | refresh 토큰은 httpOnly 쿠키 (상위 도메인 공유, 7.4절)                                                                                                                                                               |
@@ -302,15 +303,15 @@ yaguhae/
 | 배포 (프론트)     | Vercel (Root Directory = `apps/web`)                       | `app.<도메인>`. PR마다 Vercel Preview                                                                                                                                                                                |
 | 배포 (백엔드)     | AWS EC2 + Docker                                           | `api.<도메인>`. `turbo prune @yaguhae/server --docker`로 이미지 빌드. 인스턴스는 `t4g.small`(서울), 접속은 SSM만 ([인프라 설계](../infra.md))                                                                        |
 | 환경              | local / prod 2단 구성                                      | 스테이징 없음 (MVP). 시크릿은 SSM Parameter Store                                                                                                                                                                    |
-| CI/CD             | GitHub Actions + Turborepo                                 | 변경된 패키지만 lint/test/build. 배포 시 앱 교체 전 `migration:run` 자동 실행                                                                                                                                        |
+| CI/CD             | GitHub Actions + Turborepo                                 | 변경된 패키지만 lint/test/build. 배포 시 앱 교체 전 `prisma migrate deploy` 자동 실행                                                                                                                                |
 | 모니터링          | Sentry (web, server) + UptimeRobot(`/health`)              | 로그는 Docker 로그 로테이션                                                                                                                                                                                          |
 
 ### 7.3 데이터·동시성 원칙
 
-- **스키마 변경은 마이그레이션으로만** 한다. 모든 환경에서 `synchronize: false`. 마이그레이션은 CI/CD 배포 단계에서 앱 교체 전에 자동 실행한다. 스테이징이 없으므로 마이그레이션은 하위 호환(컬럼 추가 → 배포 → 이후 정리) 방식으로 작성한다.
-- **동시 예약 경쟁** (잔여 1자리에 동시 예약): 예약 트랜잭션 안에서 포지션 슬롯 row에 비관적 락(`pessimistic_write`)을 건다. `(game_id, user_id)` 활성 예약 unique 제약을 이중 안전장치로 둔다.
-- **트랜잭션은 `typeorm-transactional`로 통일**한다. 서비스 메서드에 `@Transactional()`을 선언하고, Repository는 트랜잭션 컨텍스트를 자동으로 따른다. 동시성 테스트로 락·롤백 동작을 검증한다.
-- **응답은 DTO로 매핑**한다. Entity를 그대로 반환하지 않는다. 계좌번호, 노쇼 상세 등 민감 필드 노출을 막고, 이 DTO가 OpenAPI 스키마의 기준이 된다.
+- **스키마 변경은 마이그레이션으로만** 한다. `prisma migrate dev`로 만든 마이그레이션 파일만 적용하고, `prisma db push`는 쓰지 않는다. 마이그레이션은 CI/CD 배포 단계에서 앱 교체 전에 자동 실행한다. 스테이징이 없으므로 마이그레이션은 하위 호환(컬럼 추가 → 배포 → 이후 정리) 방식으로 작성한다.
+- **동시 예약 경쟁** (잔여 1자리에 동시 예약): 예약 트랜잭션 안에서 포지션 슬롯 row에 비관적 락(`SELECT ... FOR UPDATE`, `$queryRaw`)을 건다. `(game_id, user_id)` 활성 예약 unique 제약을 이중 안전장치로 둔다. 이 제약은 활성 상태에만 걸리는 부분 unique 인덱스라 Prisma 스키마로 표현하기 어려우므로 마이그레이션 SQL에 직접 작성한다.
+- **트랜잭션은 `@nestjs-cls/transactional`로 통일**한다. 서비스 메서드에 `@Transactional()`을 선언하고, `TransactionHost`로 실행한 쿼리는 트랜잭션 컨텍스트를 자동으로 따른다. 동시성 테스트로 락·롤백 동작을 검증한다.
+- **응답은 DTO로 매핑**한다. Prisma 모델을 그대로 반환하지 않는다. 계좌번호, 노쇼 상세 등 민감 필드 노출을 막고, 이 DTO가 OpenAPI 스키마의 기준이 된다.
 - 만료 Cron은 조건부 업데이트로 사용자 액션과의 경합에 안전하게 처리한다.
   - `WHERE status = 'RESERVED' AND reserved_at < now() - interval '24 hours'`
   - `WHERE status = 'PAYMENT_SUBMITTED' AND game.starts_at <= now()`
@@ -346,7 +347,7 @@ yaguhae/
 **트레이드오프**
 
 - **개발 기간**: 토대 단계 2~3주 → 4~6주로 증가. 개발 전체 14~16주 → 약 19주.
-- **포트폴리오 가치**: JWT 리프레시 전략, Guard 기반 권한 체계, TypeORM 트랜잭션 + 비관적 락 기반 동시성 처리, 모노레포 타입 공유·계약 기반 개발을 직접 구현한 코드로 보여줄 수 있다.
+- **포트폴리오 가치**: JWT 리프레시 전략, Guard 기반 권한 체계, Prisma 트랜잭션 + 비관적 락 기반 동시성 처리, 모노레포 타입 공유·계약 기반 개발을 직접 구현한 코드로 보여줄 수 있다.
 - **우선순위**: 카카오 OAuth 콜백, 알림톡 발송 연동, 파일 업로드 같은 배관성 작업은 라이브러리·예제 코드로 최소화한다. 상태머신·동시성·권한 체계에 시간을 투자한다.
 
 ---
@@ -376,7 +377,7 @@ D1~D9는 2026-10-12, D10~D14는 2026-10-13 확정. 변경 시 이 표와 변경 
 | D5  | 승인 후 용병 취소 | 경기 24시간 전까지 허용, 이후 앱 내 취소 불가. 환불은 주최자 직접                                                | 주최자 대체 인원 모집 시간 확보                                | 5장 P0-14, 6장     |
 | D6  | 주최자 경기 취소  | 경기 시작 전 언제든 가능, 사유 필수. 취소 이력은 집계만                                                          | 우천 취소는 당일 결정이 많음                                   | 5장 P0-12, 6장     |
 | D7  | 승인 방치 처리    | 4시간 미처리 시 주최자 리마인드, 경기 시작 시점까지 미처리 시 자동 `EXPIRED`                                     | 상태 영구 잔류 방지, 승인 4시간 지표와 연동                    | 5장 P0-6, 6장, 7.3 |
-| D8  | 트랜잭션          | `typeorm-transactional` (`@Transactional()`)                                                                     | 서비스 레이어 코드 간결화                                      | 7.2, 7.3           |
+| D8  | ORM·트랜잭션      | Prisma + `@nestjs-cls/transactional` (`@Transactional()`). v2.5에서 TypeORM + `typeorm-transactional`에서 변경   | 스키마 기반 타입 생성, 서비스 레이어 코드 간결화               | 7.2, 7.3           |
 | D9  | 배포 환경         | 스테이징 없음 (local / prod), CI/CD에서 마이그레이션 자동 실행                                                   | 1인 개발 비용·관리 부담 최소화                                 | 7.2, 7.3           |
 | D10 | 리그 개념         | 리그 = 구장(경기장) 구분 단위. 구장은 리그 하나에만 소속 (1:N). 리그·구장은 관리자 시드, 주최자는 리그 생성 불가 | 용병이 익숙한 리그명으로 구장·경기 탐색. 데이터 품질 유지      | 5장 P0-1·P0-2, 7.3 |
 | D11 | 알림 채널         | 카카오 알림톡                                                                                                    | 30~50대 타깃의 카카오 사용 습관, 이메일 대비 도달률            | 5장 P0-10, 7.2     |
@@ -444,8 +445,8 @@ D1~D9는 2026-10-12, D10~D14는 2026-10-13 확정. 변경 시 이 표와 변경 
 - CI 구성 (GitHub Actions), 프론트 Vercel·백엔드 EC2 배포 파이프라인
 - 도메인 구매, `app.` / `api.` 서브도메인·HTTPS 설정
 - Supabase 프로젝트(서울 리전) 생성, Session pooler 연결
-- ERD 최종안 확정, TypeORM Entity 정의 및 초기 마이그레이션, CI/CD 자동 마이그레이션
-- `typeorm-transactional` 설정
+- ERD 최종안 확정, Prisma 스키마 정의 및 초기 마이그레이션, CI/CD 자동 마이그레이션
+- `@nestjs-cls/transactional` 설정
 - 시군구 코드·초기 지역 리그·구장 시드 데이터
 - 카카오 소셜 로그인, JWT access/refresh, 역할 기반 Guard
 - Swagger → orval 클라이언트 생성 파이프라인
@@ -501,7 +502,7 @@ D1~D9는 2026-10-12, D10~D14는 2026-10-13 확정. 변경 시 이 표와 변경 
 
 ## 부록 A. 철회된 결정 & 보류 기능 메모
 
-### 철회된 결정 (2026-04-23 → 2026-10-13)
+### 철회된 결정 (2026-04-23 → 2026-11-18)
 
 | 기존 결정                                                   | 철회 사유                                                                                  |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -511,6 +512,7 @@ D1~D9는 2026-10-12, D10~D14는 2026-10-13 확정. 변경 시 이 표와 변경 
 | 용병이 포지션 1~3개 복수 신청, 주최자가 승인 시 포지션 지정 | P0-3 (한 경기 1포지션 예약)으로 대체                                                       |
 | 주최자가 리그를 직접 생성                                   | D10 (리그는 구장 구분 단위, 관리자 시드)으로 대체                                          |
 | 주최자 이메일+비밀번호 가입                                 | 카카오 로그인 단일화 + 역할 기반 권한 (7.2)                                                |
+| ORM = TypeORM + `typeorm-transactional` (v2)                | v2.5에서 Prisma + `@nestjs-cls/transactional`로 변경 (D8)                                  |
 
 ### 채팅 (MVP 이후 도입 시 설계 방향)
 

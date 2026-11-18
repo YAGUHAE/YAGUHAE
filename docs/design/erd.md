@@ -23,6 +23,7 @@
 
 ## 설계 원칙 (PRD 7.1, 7.3)
 
-- TypeORM Entity는 `apps/api`에만, 상태 enum은 `packages/shared`에 정의
-- 스키마 변경은 마이그레이션으로만 (`synchronize: false`), 하위 호환 방식
+- Prisma 스키마(`schema.prisma`)는 `apps/server`에만, 상태 enum은 `packages/shared`에 정의
+- 스키마 변경은 `prisma migrate` 마이그레이션으로만 (`prisma db push` 미사용), 하위 호환 방식
+- 활성 예약 부분 unique 인덱스처럼 Prisma 스키마로 표현하기 어려운 제약은 마이그레이션 SQL에 직접 작성
 - 응답은 DTO로 매핑 (계좌번호·노쇼 상세 등 민감 필드 보호)
